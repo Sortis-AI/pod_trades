@@ -1,0 +1,43 @@
+agent:
+  name: "Pod The Trader"
+  model: "minimax-m2.7"
+  max_iterations_per_turn: 10
+  max_tokens: 2048
+
+level5:
+  base_url: "https://api.level5.cloud"
+  max_daily_spend_usdc: 10.0
+  min_balance_threshold_usdc: 0.1
+
+trading:
+  target_token_address: ""
+  max_position_size_usdc: 100.0
+  max_slippage_bps: 50
+  min_trade_size_usdc: 1.0
+  max_daily_trades: 20
+  cooldown_seconds: 300
+  max_price_impact_pct: 5.0
+
+solana:
+  rpc_url: "https://api.mainnet-beta.solana.com"
+  ws_url: "wss://api.mainnet-beta.solana.com"
+
+jupiter:
+  quote_url: "https://api.jup.ag/swap/v1"
+  price_url: "https://lite-api.jup.ag/price/v3"
+  swap_url: "https://api.jup.ag/swap/v1"
+
+polling:
+  funding_interval_seconds: 10
+  funding_timeout_seconds: 3600
+  balance_monitor_interval_seconds: 30
+
+logging:
+  level: "INFO"
+  file: "pod_the_trader.log"
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+  max_bytes: 52428800
+  backup_count: 5
+
+storage:
+  base_dir: "~/.pod_the_trader"

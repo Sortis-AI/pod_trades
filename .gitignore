@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+.env
+*.log
+
+.pytest_cache/
+.coverage
+htmlcov/
+
+.venv/
+.ruff_cache/
+
+# Sensitive storage
+.pod_the_trader/

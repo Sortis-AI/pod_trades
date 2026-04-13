@@ -1,0 +1,168 @@
+"""Solana RPC tools: balance, token info, transactions."""
+
+import logging
+from typing import Any
+
+from solana.rpc.async_api import AsyncClient
+from solders.pubkey import Pubkey
+
+from pod_the_trader.tools.registry import ToolRegistry
+from pod_the_trader.trading.portfolio import (
+    LAMPORTS_PER_SOL,
+    TOKEN_2022_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def register_tools(registry: ToolRegistry, *, rpc_url: str) -> None:
+    """Register all Solana RPC tools."""
+
+    async def get_solana_balance(args: dict[str, Any]) -> dict[str, Any]:
+        address = args["address"]
+        async with AsyncClient(rpc_url) as client:
+            resp = await client.get_balance(Pubkey.from_string(address))
+            sol = resp.value / LAMPORTS_PER_SOL
+            return {
+                "address": address,
+                "balance_sol": sol,
+                "balance_lamports": resp.value,
+            }
+
+    registry.register(
+        name="get_solana_balance",
+        description="Get the SOL balance for a Solana wallet address",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "address": {"type": "string", "description": "Solana wallet address"},
+            },
+            "required": ["address"],
+        },
+        handler=get_solana_balance,
+    )
+
+    async def get_spl_token_balance(args: dict[str, Any]) -> dict[str, Any]:
+        from solana.rpc.types import TokenAccountOpts
+
+        owner_address = args["owner_address"]
+        mint_address = args["mint_address"]
+        owner = Pubkey.from_string(owner_address)
+        mint = Pubkey.from_string(mint_address)
+
+        # Query both Token and Token-2022 programs, dedupe by account pubkey.
+        seen: dict[str, float] = {}
+        async with AsyncClient(rpc_url) as client:
+            for program_id in (TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID):
+                try:
+                    resp = await client.get_token_accounts_by_owner_json_parsed(
+                        owner,
+                        TokenAccountOpts(mint=mint, program_id=program_id),
+                    )
+                    for acc in resp.value:
+                        pk = str(acc.pubkey)
+                        if pk in seen:
+                            continue
+                        parsed = acc.account.data.parsed
+                        info = parsed.get("info", {}) if isinstance(parsed, dict) else {}
+                        ui_amount = info.get("tokenAmount", {}).get("uiAmount")
+                        if ui_amount is not None:
+                            seen[pk] = float(ui_amount)
+                except Exception as e:
+                    logger.debug(
+                        "get_spl_token_balance program query failed: %s", e
+                    )
+
+        return {
+            "owner": owner_address,
+            "mint": mint_address,
+            "balance": sum(seen.values()),
+        }
+
+    registry.register(
+        name="get_spl_token_balance",
+        description="Get SPL token balance for a wallet using Associated Token Account lookup",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "owner_address": {
+                    "type": "string",
+                    "description": "Wallet address that owns the tokens",
+                },
+                "mint_address": {"type": "string", "description": "Token mint address"},
+            },
+            "required": ["owner_address", "mint_address"],
+        },
+        handler=get_spl_token_balance,
+    )
+
+    async def get_token_info(args: dict[str, Any]) -> dict[str, Any]:
+        import httpx
+
+        mint_address = args["mint_address"]
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15)) as http:
+            resp = await http.get(
+                "https://lite-api.jup.ag/tokens/v2/search",
+                params={"query": mint_address},
+            )
+            resp.raise_for_status()
+            tokens = resp.json()
+            for token in tokens:
+                if token.get("id") == mint_address:
+                    return {
+                        "address": token["id"],
+                        "symbol": token.get("symbol", ""),
+                        "name": token.get("name", ""),
+                        "decimals": token.get("decimals", 0),
+                        "logo": token.get("icon", ""),
+                    }
+            return {"error": f"Token {mint_address} not found in Jupiter token list"}
+
+    registry.register(
+        name="get_token_info",
+        description="Get token metadata (symbol, name, decimals) from Jupiter token list",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "mint_address": {"type": "string", "description": "Token mint address"},
+            },
+            "required": ["mint_address"],
+        },
+        handler=get_token_info,
+    )
+
+    async def get_recent_transactions(args: dict[str, Any]) -> dict[str, Any]:
+        address = args["address"]
+        limit = args.get("limit", 10)
+        async with AsyncClient(rpc_url) as client:
+            resp = await client.get_signatures_for_address(Pubkey.from_string(address), limit=limit)
+            txns = []
+            for sig_info in resp.value:
+                txns.append(
+                    {
+                        "signature": str(sig_info.signature),
+                        "slot": sig_info.slot,
+                        "block_time": sig_info.block_time,
+                        "err": str(sig_info.err) if sig_info.err else None,
+                    }
+                )
+            return {"address": address, "transactions": txns, "count": len(txns)}
+
+    registry.register(
+        name="get_recent_transactions",
+        description="Get recent transaction signatures for a Solana address",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "address": {"type": "string", "description": "Solana wallet address"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max transactions to return",
+                    "default": 10,
+                },
+            },
+            "required": ["address"],
+        },
+        handler=get_recent_transactions,
+    )
