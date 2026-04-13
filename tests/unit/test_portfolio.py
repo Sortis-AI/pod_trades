@@ -47,9 +47,7 @@ class TestGetSolBalance:
         assert balance == 5.0
 
 
-def _make_mock_token_account(
-    pubkey: str, ui_amount: float
-) -> MagicMock:
+def _make_mock_token_account(pubkey: str, ui_amount: float) -> MagicMock:
     acc = MagicMock()
     acc.pubkey = pubkey
     acc.account.data.parsed = {
@@ -72,9 +70,7 @@ class TestGetTokenBalance:
         resp.value = [acc]
 
         mock_client = AsyncMock()
-        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(
-            return_value=resp
-        )
+        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(return_value=resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
@@ -90,10 +86,13 @@ class TestGetTokenBalance:
     async def test_returns_zero_when_no_account(self, portfolio: Portfolio) -> None:
         empty_resp = MagicMock()
         empty_resp.value = []
+        # The ATA fallback path queries get_token_account_balance — return
+        # a value with ui_amount=None to simulate "no balance".
+        ata_resp = MagicMock()
+        ata_resp.value.ui_amount = None
         mock_client = AsyncMock()
-        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(
-            return_value=empty_resp
-        )
+        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(return_value=empty_resp)
+        mock_client.get_token_account_balance = AsyncMock(return_value=ata_resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
@@ -111,15 +110,11 @@ class TestGetTokenBalance:
         resp.value = [acc]
 
         mock_client = AsyncMock()
-        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(
-            return_value=resp
-        )
+        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(return_value=resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch(
-            "pod_the_trader.trading.portfolio.AsyncClient", return_value=mock_client
-        ):
+        with patch("pod_the_trader.trading.portfolio.AsyncClient", return_value=mock_client):
             balance = await portfolio.get_token_balance(
                 "11111111111111111111111111111111", TEST_MINT
             )
@@ -142,9 +137,7 @@ class TestGetTokenBalance:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch(
-            "pod_the_trader.trading.portfolio.AsyncClient", return_value=mock_client
-        ):
+        with patch("pod_the_trader.trading.portfolio.AsyncClient", return_value=mock_client):
             balance = await portfolio.get_token_balance(
                 "11111111111111111111111111111111", TEST_MINT
             )

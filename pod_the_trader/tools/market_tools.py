@@ -19,9 +19,7 @@ def register_tools(
     """Register all market data tools."""
 
     async def get_market_price(args: dict[str, Any]) -> dict[str, Any]:
-        mint_address = args.get("mint_address") or config.get(
-            "trading.target_token_address", ""
-        )
+        mint_address = args.get("mint_address") or config.get("trading.target_token_address", "")
         if not mint_address:
             return {"error": "No mint_address specified and no target token"}
         price = await jupiter_dex.get_token_price(mint_address)
@@ -35,9 +33,7 @@ def register_tools(
             "properties": {
                 "mint_address": {
                     "type": "string",
-                    "description": (
-                        "Token mint address (defaults to target token)"
-                    ),
+                    "description": ("Token mint address (defaults to target token)"),
                 },
             },
         },
@@ -47,9 +43,7 @@ def register_tools(
     async def get_token_details(args: dict[str, Any]) -> dict[str, Any]:
         import httpx
 
-        mint_address = args.get("mint_address") or config.get(
-            "trading.target_token_address", ""
-        )
+        mint_address = args.get("mint_address") or config.get("trading.target_token_address", "")
         if not mint_address:
             return {"error": "No mint_address specified and no target token"}
         price = await jupiter_dex.get_token_price(mint_address)
@@ -81,9 +75,7 @@ def register_tools(
             "properties": {
                 "mint_address": {
                     "type": "string",
-                    "description": (
-                        "Token mint address (defaults to target token)"
-                    ),
+                    "description": ("Token mint address (defaults to target token)"),
                 },
             },
         },
@@ -91,9 +83,7 @@ def register_tools(
     )
 
     async def analyze_market_conditions(args: dict[str, Any]) -> dict[str, Any]:
-        mint_address = args.get("mint_address") or config.get(
-            "trading.target_token_address", ""
-        )
+        mint_address = args.get("mint_address") or config.get("trading.target_token_address", "")
         if not mint_address:
             return {"error": "No mint_address specified and no target token"}
         try:
@@ -125,10 +115,7 @@ def register_tools(
             "properties": {
                 "mint_address": {
                     "type": "string",
-                    "description": (
-                        "Token mint address to analyze "
-                        "(defaults to target token)"
-                    ),
+                    "description": ("Token mint address to analyze (defaults to target token)"),
                 },
             },
         },

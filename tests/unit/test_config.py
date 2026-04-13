@@ -49,9 +49,23 @@ class TestConfigLoading:
 
 
 class TestConfigValidation:
-    def test_raises_on_empty_token_address(self) -> None:
+    def test_raises_on_empty_token_address(self, tmp_path: Path) -> None:
+        # Explicitly override the packaged default to an empty string so we
+        # can verify the validator catches it. The packaged default itself
+        # ships with a real target mint.
+        config_file = tmp_path / "c.yaml"
+        config_file.write_text(yaml.dump({"trading": {"target_token_address": ""}}))
         with pytest.raises(ConfigError, match="target_token_address must be set"):
-            Config()
+            Config(str(config_file))
+
+    def test_default_config_has_valid_target(self) -> None:
+        # Packaged defaults.yaml must ship with a real target token so
+        # `uv run pod-the-trader` works with zero env vars.
+        config = Config()
+        target = config.get("trading.target_token_address")
+        assert target
+        assert "_HERE" not in target
+        assert len(target) > 30  # Solana addresses are ~43 chars
 
     def test_raises_on_placeholder_token_address(self, tmp_path: Path) -> None:
         config_file = tmp_path / "c.yaml"

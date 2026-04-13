@@ -32,9 +32,10 @@ class TestAsyncMain:
     ) -> None:
         from pod_the_trader.main import async_main
 
-        # Create a config file with no target token -> ConfigError
+        # Explicitly override the packaged default's target token with an
+        # empty string so the validator fails with ConfigError.
         config_file = tmp_path / "bad_config.yaml"
-        config_file.write_text("agent:\n  name: test\n")
+        config_file.write_text('trading:\n  target_token_address: ""\n')
         with pytest.raises(SystemExit):
             await async_main(config_path=str(config_file))
 

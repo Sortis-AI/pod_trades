@@ -79,10 +79,20 @@ class Portfolio:
     async def get_token_balance(self, owner_address: str, mint_address: str) -> float:
         """Get SPL token balance for a wallet+mint.
 
-        Uses getTokenAccountsByOwner with a mint filter under BOTH the legacy
-        Token program and Token-2022 program, deduping by token-account
-        pubkey (the RPC sometimes returns the same account under both
-        program filters). Handles tokens on either program correctly.
+        Strategy (in order, first non-error wins):
+
+        1. ``getTokenAccountsByOwner`` with a mint filter under BOTH the
+           legacy Token program and Token-2022 program. Dedupes by token
+           account pubkey (the RPC sometimes returns the same account
+           under both program filters).
+        2. Fallback: derive the Associated Token Account address for both
+           program variants and fetch each one directly via
+           ``getTokenAccountBalance``. This works even when the bulk
+           ``getTokenAccountsByOwner`` call fails (some RPC providers
+           rate-limit or return empty bodies on it).
+
+        If all paths fail, logs a WARNING (not DEBUG) so the operator can
+        see the real exception type and message instead of a silent zero.
         """
         from solana.rpc.types import TokenAccountOpts
 
@@ -90,7 +100,10 @@ class Portfolio:
         mint = Pubkey.from_string(mint_address)
 
         seen: dict[str, float] = {}
+        errors: list[str] = []
+
         async with AsyncClient(self._rpc_url) as client:
+            # ---- Path 1: getTokenAccountsByOwner under both programs ----
             for program_id in (TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID):
                 try:
                     resp = await client.get_token_accounts_by_owner_json_parsed(
@@ -107,12 +120,43 @@ class Portfolio:
                         if ui_amount is not None:
                             seen[pubkey] = float(ui_amount)
                 except Exception as e:
-                    logger.debug(
-                        "getTokenAccountsByOwner failed (%s): %s",
-                        str(program_id)[:12],
-                        e,
+                    errors.append(
+                        f"getTokenAccountsByOwner({str(program_id)[:12]}): "
+                        f"{type(e).__name__}: {e!r}"
                     )
-        return sum(seen.values())
+
+            if seen:
+                return sum(seen.values())
+
+            # ---- Path 2: ATA fallback for both programs ----
+            for program_id in (TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID):
+                try:
+                    ata, _ = Pubkey.find_program_address(
+                        [bytes(owner), bytes(program_id), bytes(mint)],
+                        ASSOCIATED_TOKEN_PROGRAM_ID,
+                    )
+                    bal = await client.get_token_account_balance(ata)
+                    if bal.value is not None and bal.value.ui_amount is not None:
+                        seen[str(ata)] = float(bal.value.ui_amount)
+                except Exception as e:
+                    errors.append(
+                        f"getTokenAccountBalance(ATA, {str(program_id)[:12]}): "
+                        f"{type(e).__name__}: {e!r}"
+                    )
+
+        if seen:
+            return sum(seen.values())
+
+        # All paths failed — surface the real error so the user can act on it.
+        if errors:
+            logger.warning(
+                "Could not read token balance for %s on wallet %s. "
+                "All RPC paths failed: %s",
+                mint_address[:8],
+                owner_address[:8],
+                " | ".join(errors),
+            )
+        return 0.0
 
     async def get_portfolio_value(
         self,

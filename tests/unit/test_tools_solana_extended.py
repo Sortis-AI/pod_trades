@@ -9,14 +9,20 @@ import respx
 
 from pod_the_trader.tools.registry import ToolRegistry
 from pod_the_trader.tools.solana_tools import register_tools
+from pod_the_trader.trading.portfolio import Portfolio
 
 SOL_MINT = "So11111111111111111111111111111111111111112"
 
 
 @pytest.fixture()
-def registry() -> ToolRegistry:
+def portfolio() -> Portfolio:
+    return Portfolio(rpc_url="https://api.devnet.solana.com", jupiter_dex=MagicMock())
+
+
+@pytest.fixture()
+def registry(portfolio: Portfolio) -> ToolRegistry:
     reg = ToolRegistry()
-    register_tools(reg, rpc_url="https://api.devnet.solana.com")
+    register_tools(reg, rpc_url="https://api.devnet.solana.com", portfolio=portfolio)
     return reg
 
 
@@ -54,16 +60,21 @@ class TestGetTokenInfo:
 
 class TestGetSplTokenBalanceZero:
     async def test_returns_zero_on_null_value(self, registry: ToolRegistry) -> None:
-        mock_resp = MagicMock()
-        mock_resp.value = None
+        empty_resp = MagicMock()
+        empty_resp.value = []
+        ata_resp = MagicMock()
+        ata_resp.value.ui_amount = None
 
         mock_client = AsyncMock()
-        mock_client.get_token_account_balance = AsyncMock(return_value=mock_resp)
+        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(
+            return_value=empty_resp
+        )
+        mock_client.get_token_account_balance = AsyncMock(return_value=ata_resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
         with patch(
-            "pod_the_trader.tools.solana_tools.AsyncClient",
+            "pod_the_trader.trading.portfolio.AsyncClient",
             return_value=mock_client,
         ):
             result = json.loads(
@@ -80,12 +91,17 @@ class TestGetSplTokenBalanceZero:
 
     async def test_returns_zero_on_exception(self, registry: ToolRegistry) -> None:
         mock_client = AsyncMock()
-        mock_client.get_token_account_balance = AsyncMock(side_effect=Exception("not found"))
+        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(
+            side_effect=Exception("not found")
+        )
+        mock_client.get_token_account_balance = AsyncMock(
+            side_effect=Exception("ata also failed")
+        )
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
         with patch(
-            "pod_the_trader.tools.solana_tools.AsyncClient",
+            "pod_the_trader.trading.portfolio.AsyncClient",
             return_value=mock_client,
         ):
             result = json.loads(

@@ -5,37 +5,27 @@ from pod_the_trader.agent.core import parse_decision
 
 class TestStrictFormat:
     def test_basic_hold(self) -> None:
-        action, reason = parse_decision(
-            "DECISION: HOLD — Price stable, no signal."
-        )
+        action, reason = parse_decision("DECISION: HOLD — Price stable, no signal.")
         assert action == "HOLD"
         assert "Price stable" in reason
 
     def test_basic_buy(self) -> None:
-        action, reason = parse_decision(
-            "DECISION: BUY — Strong breakout above resistance."
-        )
+        action, reason = parse_decision("DECISION: BUY — Strong breakout above resistance.")
         assert action == "BUY"
         assert "breakout" in reason
 
     def test_basic_sell(self) -> None:
-        action, reason = parse_decision(
-            "DECISION: SELL — Taking profit at 2x entry."
-        )
+        action, reason = parse_decision("DECISION: SELL — Taking profit at 2x entry.")
         assert action == "SELL"
         assert "profit" in reason
 
     def test_bolded_decision(self) -> None:
-        action, _ = parse_decision(
-            "**DECISION:** HOLD — Bolded format should still match."
-        )
+        action, _ = parse_decision("**DECISION:** HOLD — Bolded format should still match.")
         assert action == "HOLD"
 
     def test_different_dashes(self) -> None:
         for dash in ("—", "–", "-", ":"):
-            action, _ = parse_decision(
-                f"DECISION: HOLD {dash} reason here"
-            )
+            action, _ = parse_decision(f"DECISION: HOLD {dash} reason here")
             assert action == "HOLD"
 
     def test_case_insensitive(self) -> None:

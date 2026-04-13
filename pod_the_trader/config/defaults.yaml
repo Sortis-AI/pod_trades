@@ -10,7 +10,7 @@ level5:
   min_balance_threshold_usdc: 0.1
 
 trading:
-  target_token_address: ""
+  target_token_address: "EN2nnxrg8uUi6x2sJkzNPd2eT6rB9rdSoQNNaENA4RZA"
   max_position_size_usdc: 100.0
   max_slippage_bps: 50
   min_trade_size_usdc: 1.0

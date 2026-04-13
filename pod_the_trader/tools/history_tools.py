@@ -83,9 +83,7 @@ def register_tools(
             # Default to the target token if mint not provided — the model
             # frequently forgets and we'd rather return target-token history
             # than error out.
-            mint = args.get("mint") or config.get(
-                "trading.target_token_address", ""
-            )
+            mint = args.get("mint") or config.get("trading.target_token_address", "")
             if not mint:
                 return {"error": "No mint specified and no target token configured"}
             limit = int(args.get("limit", 50))
@@ -117,9 +115,7 @@ def register_tools(
                 "properties": {
                     "mint": {
                         "type": "string",
-                        "description": (
-                            "Token mint address; defaults to target token"
-                        ),
+                        "description": ("Token mint address; defaults to target token"),
                     },
                     "limit": {
                         "type": "integer",
@@ -135,9 +131,7 @@ def register_tools(
             # Default to the target token if mint not provided — the model
             # frequently omits it and we'd rather return target volatility
             # than error out.
-            mint = args.get("mint") or config.get(
-                "trading.target_token_address", ""
-            )
+            mint = args.get("mint") or config.get("trading.target_token_address", "")
             if not mint:
                 return {"error": "No mint specified and no target token configured"}
             vol = price_log.volatility(mint)
@@ -160,9 +154,7 @@ def register_tools(
                 "properties": {
                     "mint": {
                         "type": "string",
-                        "description": (
-                            "Token mint; defaults to target token"
-                        ),
+                        "description": ("Token mint; defaults to target token"),
                     },
                 },
             },

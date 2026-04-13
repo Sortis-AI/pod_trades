@@ -57,6 +57,10 @@ class Level5Client:
         self._base_url = base_url.rstrip("/")
         self._http: httpx.AsyncClient | None = None
         self._last_balance_usdc: float | None = None
+        # Split between deposited USDC and promotional credits — both in
+        # USD, populated on every successful get_balance() call.
+        self._last_usdc_only: float = 0.0
+        self._last_credit_only: float = 0.0
 
     async def __aenter__(self) -> "Level5Client":
         self._http = httpx.AsyncClient(
@@ -101,6 +105,8 @@ class Level5Client:
             # usdc_balance and credit_balance are in microunits (6 decimals)
             usdc = int(data.get("usdc_balance", 0))
             credit = int(data.get("credit_balance", 0))
+            self._last_usdc_only = usdc / _USDC_DECIMALS
+            self._last_credit_only = credit / _USDC_DECIMALS
             balance = (usdc + credit) / _USDC_DECIMALS
             self._last_balance_usdc = balance
             return balance
@@ -155,6 +161,16 @@ class Level5Client:
     def last_known_balance(self) -> float | None:
         """Return the last cached balance, or None if never checked."""
         return self._last_balance_usdc
+
+    @property
+    def last_usdc_balance(self) -> float:
+        """Deposited USDC portion of the last balance check."""
+        return self._last_usdc_only
+
+    @property
+    def last_credit_balance(self) -> float:
+        """Promotional credit portion of the last balance check."""
+        return self._last_credit_only
 
     def _parse_balance_header(self, response: httpx.Response) -> float:
         """Parse X-Balance-Remaining from a response."""

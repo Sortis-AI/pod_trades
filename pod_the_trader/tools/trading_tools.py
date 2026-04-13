@@ -25,6 +25,7 @@ from pod_the_trader.data.ledger import (
 from pod_the_trader.tools.registry import ToolRegistry
 from pod_the_trader.trading.dex import SOL_MINT, JupiterDex
 from pod_the_trader.trading.portfolio import Portfolio
+from pod_the_trader.tui.publisher import NullPublisher, Publisher
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +206,10 @@ def register_tools(
     wallet_address: str,
     ledger: TradeLedger | None = None,
     session_id: str = "",
+    publisher: Publisher | None = None,
 ) -> None:
+    pub: Publisher = publisher or NullPublisher()
+    tui_mode: bool = not isinstance(pub, NullPublisher)
     """Register all trading tools."""
 
     _keypair_holder: dict[str, Keypair | None] = {"keypair": None}
@@ -374,14 +378,12 @@ def register_tools(
                     summary_text = format_trade_pnl(pnl)
                     for line in summary_text.splitlines():
                         logger.info(line)
-                    print()
-                    print(summary_text)
 
-                    # Portfolio snapshot AFTER the trade
+                    # Gather the post-trade portfolio snapshot once (used by
+                    # both the CLI print path and the publisher event).
+                    snapshot: dict[str, object] = {}
                     try:
-                        sol_balance = await portfolio.get_sol_balance(
-                            wallet_address
-                        )
+                        sol_balance = await portfolio.get_sol_balance(wallet_address)
                         target = config.get("trading.target_token_address", "")
                         token_balance = 0.0
                         token_price = 0.0
@@ -390,29 +392,55 @@ def register_tools(
                                 wallet_address, target
                             )
                             try:
-                                token_price = await jupiter_dex.get_token_price(
-                                    target
-                                )
+                                token_price = await jupiter_dex.get_token_price(target)
                             except Exception:
                                 token_price = 0.0
                         sol_value = sol_balance * sol_price
                         token_value = token_balance * token_price
                         total = sol_value + token_value
-                        print("  Portfolio after trade:")
-                        print(
-                            f"    SOL:     {sol_balance:.6f} "
-                            f"(${sol_value:,.4f})"
-                        )
-                        if target:
-                            print(
-                                f"    target:  {token_balance:,.4f} "
-                                f"@ ${token_price:.8f} "
-                                f"= ${token_value:,.4f}"
-                            )
-                        print(f"    total:   ${total:,.4f}")
+                        snapshot = {
+                            "sol_ui": sol_balance,
+                            "sol_value_usd": sol_value,
+                            "token_ui": token_balance,
+                            "token_price_usd": token_price,
+                            "token_value_usd": token_value,
+                            "total_usd": total,
+                        }
                     except Exception as e:
                         logger.debug("Post-trade snapshot failed: %s", e)
-                    print()
+
+                    # Emit to whoever is listening — TUI or no one.
+                    pub.on_trade(
+                        {
+                            "timestamp": entry.timestamp,
+                            "side": entry.side,
+                            "input_value_usd": entry.input_value_usd,
+                            "actual_out_ui": entry.actual_out_ui,
+                            "signature": entry.signature,
+                        },
+                        pnl,
+                    )
+                    if snapshot:
+                        pub.on_portfolio_snapshot(snapshot)
+
+                    # CLI path still prints the block to stdout.
+                    if not tui_mode:
+                        print()
+                        print(summary_text)
+                        if snapshot:
+                            print("  Portfolio after trade:")
+                            print(
+                                f"    SOL:     {snapshot['sol_ui']:.6f} "
+                                f"(${snapshot['sol_value_usd']:,.4f})"
+                            )
+                            if config.get("trading.target_token_address", ""):
+                                print(
+                                    f"    target:  {snapshot['token_ui']:,.4f} "
+                                    f"@ ${snapshot['token_price_usd']:.8f} "
+                                    f"= ${snapshot['token_value_usd']:,.4f}"
+                                )
+                            print(f"    total:   ${snapshot['total_usd']:,.4f}")
+                        print()
                 except Exception as e:
                     logger.warning("Failed to compute per-trade P&L: %s", e)
 
@@ -508,9 +536,7 @@ def register_tools(
     )
 
     async def get_token_price(args: dict[str, Any]) -> dict[str, Any]:
-        mint_address = args.get("mint_address") or config.get(
-            "trading.target_token_address", ""
-        )
+        mint_address = args.get("mint_address") or config.get("trading.target_token_address", "")
         if not mint_address:
             return {"error": "No mint_address specified and no target token"}
         price = await jupiter_dex.get_token_price(mint_address)
@@ -527,9 +553,7 @@ def register_tools(
             "properties": {
                 "mint_address": {
                     "type": "string",
-                    "description": (
-                        "Token mint address (defaults to target token)"
-                    ),
+                    "description": ("Token mint address (defaults to target token)"),
                 },
             },
         },

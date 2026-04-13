@@ -7,6 +7,7 @@ from pod_the_trader.tools.registry import ToolRegistry
 from pod_the_trader.trading.dex import JupiterDex
 from pod_the_trader.trading.portfolio import Portfolio
 from pod_the_trader.trading.transaction import TransactionBuilder
+from pod_the_trader.tui.publisher import Publisher
 
 
 def create_registry(
@@ -20,6 +21,7 @@ def create_registry(
     ledger: TradeLedger | None = None,
     price_log: PriceLog | None = None,
     session_id: str = "",
+    publisher: Publisher | None = None,
 ) -> ToolRegistry:
     """Wire up all tool modules and return a populated registry."""
     from pod_the_trader.tools import (
@@ -31,7 +33,12 @@ def create_registry(
     )
 
     registry = ToolRegistry()
-    solana_tools.register_tools(registry, rpc_url=rpc_url)
+    solana_tools.register_tools(
+        registry,
+        rpc_url=rpc_url,
+        wallet_address=wallet_address,
+        portfolio=portfolio,
+    )
     market_tools.register_tools(registry, config=config, jupiter_dex=jupiter_dex)
     trading_tools.register_tools(
         registry,
@@ -41,6 +48,7 @@ def create_registry(
         wallet_address=wallet_address,
         ledger=ledger,
         session_id=session_id,
+        publisher=publisher,
     )
     portfolio_tools.register_tools(
         registry, portfolio=portfolio, wallet_address=wallet_address, config=config

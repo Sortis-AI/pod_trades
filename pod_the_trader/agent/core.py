@@ -19,6 +19,7 @@ from pod_the_trader.level5.client import Level5Client
 from pod_the_trader.tools.registry import ToolRegistry
 from pod_the_trader.trading.dex import SOL_MINT, JupiterDex
 from pod_the_trader.trading.portfolio import Portfolio
+from pod_the_trader.tui.publisher import NullPublisher, Publisher
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,7 @@ class TradingAgent:
         wallet_log: WalletLog | None = None,
         portfolio: Portfolio | None = None,
         wallet_address: str = "",
+        publisher: Publisher | None = None,
     ) -> None:
         self._config = config
         self._level5 = level5_client
@@ -182,6 +184,12 @@ class TradingAgent:
         self._wallet_log = wallet_log
         self._portfolio = portfolio
         self._wallet_address = wallet_address
+        self._target_symbol: str = ""
+        self._target_name: str = ""
+        self._publisher: Publisher = publisher or NullPublisher()
+        # TUI mode when the publisher is something other than NullPublisher:
+        # skip the print() paths and let the TUI render instead.
+        self._tui_mode: bool = not isinstance(self._publisher, NullPublisher)
         self._trade_count = 0
         self._cycle_count = 0
         self._last_trade_time: float | None = None
@@ -253,6 +261,20 @@ class TradingAgent:
             max_pos = self._config.get("trading.max_position_size_usdc")
             parts.append(f"\nMax position size: ${max_pos} USDC")
             parts.append(f"Max slippage: {self._config.get('trading.max_slippage_bps')} bps")
+
+        if self._wallet_address:
+            parts.append(
+                f"\nYOUR WALLET ADDRESS: {self._wallet_address}\n"
+                "All balance/transaction tools (get_solana_balance, "
+                "get_spl_token_balance, get_recent_transactions, "
+                "get_portfolio_overview, get_token_balance) operate on "
+                "THIS wallet automatically. Do NOT pass an address "
+                "argument — the tools ignore any address you supply and "
+                "always use the wallet above. NEVER invent or guess a "
+                "wallet address; if you find yourself typing one that is "
+                "not the address above, stop and call the tool with no "
+                "arguments instead."
+            )
 
         trade_ctx = self._memory.get_trade_context()
         if trade_ctx:
@@ -372,6 +394,16 @@ class TradingAgent:
         cooldown = self._config.get("trading.cooldown_seconds", 300)
         min_balance = self._config.get("level5.min_balance_threshold_usdc", 2.0)
 
+        # In TUI mode, the orchestrator can't await print_startup_banner
+        # before starting the worker (the worker IS the post-mount runtime).
+        # Run it inline now so the dashboard gets seeded with real data on
+        # the first tick instead of waiting an entire cooldown period.
+        if self._tui_mode:
+            try:
+                await self.print_startup_banner()
+            except Exception as e:
+                logger.debug("Startup banner publish failed: %s", e)
+
         logger.info("Starting autonomous trading loop (cooldown: %ds)", cooldown)
 
         while not shutdown_event.is_set():
@@ -379,6 +411,11 @@ class TradingAgent:
                 # Check Level5 balance
                 try:
                     balance = await self._level5.get_balance()
+                    # Publish the split (USDC vs credits) to any observer.
+                    self._publisher.on_level5_balance(
+                        self._level5.last_usdc_balance,
+                        self._level5.last_credit_balance,
+                    )
                     if balance < min_balance:
                         logger.warning(
                             "Level5 balance low: $%.2f (min: $%.2f). Pausing.",
@@ -396,8 +433,33 @@ class TradingAgent:
                 # Snapshot on-chain wallet balances
                 await self._sample_wallet()
 
-                # Run a trading analysis turn
+                # Emit cycle-start event to any observer (TUI).
+                self._cycle_count += 1
+                self._publisher.on_cycle_start(
+                    self._cycle_count,
+                    datetime.now(UTC).isoformat(),
+                )
+
+                # Run a trading analysis turn. Inject an authoritative
+                # portfolio snapshot at the top of the prompt so the model
+                # cannot carry forward stale "SOL balance 0" beliefs from
+                # previous cycles when the wallet has since been refunded.
+                snapshot_block = ""
+                try:
+                    snap = await self._fetch_portfolio_snapshot()
+                    snapshot_block = (
+                        "AUTHORITATIVE LIVE PORTFOLIO (just fetched, this is ground truth — "
+                        "ignore any contradicting numbers in earlier messages):\n"
+                        f"  SOL: {snap['sol_ui']:.6f} (${snap['sol_value_usd']:,.4f})\n"
+                        f"  target token: {snap['token_ui']:,.4f} "
+                        f"(${snap['token_value_usd']:,.4f})\n"
+                        f"  total: ${snap['total_usd']:,.4f}\n\n"
+                    )
+                except Exception as e:
+                    logger.debug("Could not fetch live snapshot for prompt: %s", e)
+
                 prompt = (
+                    f"{snapshot_block}"
                     "Analyze current market conditions for the target token. "
                     "Check your portfolio, review recent trades, and decide "
                     "whether to make a trade. If trading, get a quote first "
@@ -408,9 +470,12 @@ class TradingAgent:
                 # Full response goes to the file log only (debug level).
                 logger.debug("Full cycle response:\n%s", response)
 
-                # Print a clean cycle summary block to stdout.
-                self._cycle_count += 1
-                await self._print_cycle_summary(response, cooldown)
+                # CLI path: print the summary block to stdout.
+                # TUI path: publish the structured summary to the dashboard.
+                if self._tui_mode:
+                    await self._publish_cycle_summary(response, cooldown)
+                else:
+                    await self._print_cycle_summary(response, cooldown)
 
                 # Save state
                 self._memory.save()
@@ -428,14 +493,86 @@ class TradingAgent:
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(shutdown_event.wait(), timeout=seconds)
 
+    async def fetch_target_metadata(self) -> None:
+        """Look up the target token's symbol/name from the Jupiter token list.
+
+        Cached on the agent so other code (e.g. the TUI startup banner) can
+        display "SQUIRE" instead of the generic "TARGET" placeholder.
+        """
+        target = self._config.get("trading.target_token_address", "")
+        if not target:
+            return
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=httpx.Timeout(15)) as http:
+                resp = await http.get(
+                    "https://lite-api.jup.ag/tokens/v2/search",
+                    params={"query": target},
+                )
+                resp.raise_for_status()
+                for token in resp.json():
+                    if token.get("id") == target:
+                        self._target_symbol = token.get("symbol", "") or ""
+                        self._target_name = token.get("name", "") or ""
+                        logger.info(
+                            "Target token: %s (%s)",
+                            self._target_name or self._target_symbol or target,
+                            self._target_symbol,
+                        )
+                        return
+        except Exception as e:
+            logger.debug("Could not fetch target metadata: %s", e)
+
     async def print_startup_banner(self) -> None:
-        """Print a one-time clean banner when the bot starts up.
+        """Emit a startup summary (print in CLI mode, publish in TUI mode).
 
         Includes a live on-chain portfolio snapshot with dollar values.
         """
         target = self._config.get("trading.target_token_address", "")
         model = self._config.get("agent.model", "?")
         cooldown = self._config.get("trading.cooldown_seconds", 300)
+        ledger_summary = self._ledger.summary() if self._ledger else None
+
+        # Resolve the human ticker for the target token (e.g. SQUIRE)
+        if not self._target_symbol:
+            await self.fetch_target_metadata()
+
+        # Fetch a snapshot up front either way — TUI wants it, CLI prints it.
+        snapshot = None
+        try:
+            snapshot = await self._fetch_portfolio_snapshot()
+        except Exception as e:
+            logger.warning("Could not fetch startup portfolio snapshot: %s", e)
+
+        # Fetch Level5 balance up front so the TUI doesn't sit at "no balance"
+        # until the first cycle finishes (~300s away).
+        try:
+            await self._level5.get_balance()
+        except Exception as e:
+            logger.debug("Startup Level5 balance fetch failed: %s", e)
+
+        # TUI path: publish events and return.
+        if self._tui_mode:
+            self._publisher.on_startup(
+                wallet=self._wallet_address,
+                target=target,
+                target_symbol=self._target_symbol,
+                target_name=self._target_name,
+                model=model,
+                cooldown=cooldown,
+                dashboard_url=self._level5.get_dashboard_url(),
+                ledger_summary=ledger_summary,
+            )
+            if snapshot:
+                self._publisher.on_portfolio_snapshot(snapshot)
+            self._publisher.on_level5_balance(
+                self._level5.last_usdc_balance,
+                self._level5.last_credit_balance,
+            )
+            return
+
+        # CLI path: keep printing the banner as before.
         bar = "━" * 66
         print()
         print(bar)
@@ -445,23 +582,17 @@ class TradingAgent:
         print(f"  Target:      {target}")
         print(f"  Model:       {model}")
         print(f"  Cycle:       every {cooldown}s")
-        if self._ledger is not None:
-            s = self._ledger.summary()
-            if s["trade_count"] > 0:
-                sign = "+" if s["realized_pnl_usd"] >= 0 else ""
-                print(
-                    f"  Ledger:      {s['trade_count']} trades, "
-                    f"realized {sign}${s['realized_pnl_usd']:.4f}"
-                )
-        print()
-        # Live on-chain portfolio snapshot
-        try:
-            snapshot = await self._fetch_portfolio_snapshot()
-            print("  Portfolio (on-chain):")
+        if ledger_summary and ledger_summary["trade_count"] > 0:
+            s = ledger_summary
+            sign = "+" if s["realized_pnl_usd"] >= 0 else ""
             print(
-                f"    SOL:       {snapshot['sol_ui']:.6f} "
-                f"(${snapshot['sol_value_usd']:,.4f})"
+                f"  Ledger:      {s['trade_count']} trades, "
+                f"realized {sign}${s['realized_pnl_usd']:.4f}"
             )
+        print()
+        if snapshot is not None:
+            print("  Portfolio (on-chain):")
+            print(f"    SOL:       {snapshot['sol_ui']:.6f} (${snapshot['sol_value_usd']:,.4f})")
             if target:
                 print(
                     f"    target:    {snapshot['token_ui']:,.4f} "
@@ -469,8 +600,6 @@ class TradingAgent:
                     f"= ${snapshot['token_value_usd']:,.4f}"
                 )
             print(f"    total:     ${snapshot['total_usd']:,.4f}")
-        except Exception as e:
-            logger.warning("Could not fetch startup portfolio snapshot: %s", e)
         print(bar)
         print(flush=True)
 
@@ -485,9 +614,7 @@ class TradingAgent:
         if self._portfolio is not None:
             sol_ui = await self._portfolio.get_sol_balance(self._wallet_address)
             if target:
-                token_ui = await self._portfolio.get_token_balance(
-                    self._wallet_address, target
-                )
+                token_ui = await self._portfolio.get_token_balance(self._wallet_address, target)
         if self._dex is not None:
             try:
                 sol_price = await self._dex.get_token_price(SOL_MINT)
@@ -513,10 +640,7 @@ class TradingAgent:
     def print_portfolio_snapshot(self, snapshot: dict, indent: str = "  ") -> None:
         """Print a compact 3-line portfolio snapshot to stdout."""
         target = self._config.get("trading.target_token_address", "")
-        print(
-            f"{indent}SOL:       {snapshot['sol_ui']:.6f} "
-            f"(${snapshot['sol_value_usd']:,.4f})"
-        )
+        print(f"{indent}SOL:       {snapshot['sol_ui']:.6f} (${snapshot['sol_value_usd']:,.4f})")
         if target:
             print(
                 f"{indent}target:    {snapshot['token_ui']:,.4f} "
@@ -525,9 +649,7 @@ class TradingAgent:
             )
         print(f"{indent}total:     ${snapshot['total_usd']:,.4f}")
 
-    async def _print_cycle_summary(
-        self, response: str, cooldown_seconds: float
-    ) -> None:
+    async def _print_cycle_summary(self, response: str, cooldown_seconds: float) -> None:
         """Print a clean one-block summary of the cycle to stdout.
 
         Shows: portfolio snapshot with USD values, decision, short reason,
@@ -550,9 +672,7 @@ class TradingAgent:
 
         ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
         bar = "━" * 66
-        icon = {"BUY": "📈", "SELL": "📉", "HOLD": "⏸", "UNKNOWN": "❓"}.get(
-            action, "❓"
-        )
+        icon = {"BUY": "📈", "SELL": "📉", "HOLD": "⏸", "UNKNOWN": "❓"}.get(action, "❓")
 
         print()
         print(bar)
@@ -576,6 +696,27 @@ class TradingAgent:
         print(f"  Next:       in {next_min}:{next_sec:02d}")
         print(bar)
         print(flush=True)
+
+    async def _publish_cycle_summary(self, response: str, cooldown_seconds: float) -> None:
+        """Publish a structured cycle summary to the TUI (no stdout output)."""
+        action, reason = parse_decision(response)
+        try:
+            snapshot = await self._fetch_portfolio_snapshot()
+        except Exception as e:
+            logger.debug("Cycle summary balance fetch failed: %s", e)
+            snapshot = {}
+
+        summary = {
+            "cycle_num": self._cycle_count,
+            "decision": action,
+            "reason": reason,
+            "portfolio": snapshot,
+            "cooldown_seconds": cooldown_seconds,
+        }
+        self._publisher.on_cycle_complete(summary)
+        # Also push a fresh portfolio snapshot event.
+        if snapshot:
+            self._publisher.on_portfolio_snapshot(snapshot)
 
     async def _sample_prices(self) -> None:
         """Append a price tick for SOL + target token to the price log."""

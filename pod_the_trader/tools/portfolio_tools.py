@@ -43,9 +43,7 @@ def register_tools(
     )
 
     async def get_token_balance(args: dict[str, Any]) -> dict[str, Any]:
-        mint_address = args.get("mint_address") or config.get(
-            "trading.target_token_address", ""
-        )
+        mint_address = args.get("mint_address") or config.get("trading.target_token_address", "")
         if not mint_address:
             return {"error": "No mint_address specified and no target token"}
         balance = await portfolio.get_token_balance(wallet_address, mint_address)
@@ -62,9 +60,7 @@ def register_tools(
             "properties": {
                 "mint_address": {
                     "type": "string",
-                    "description": (
-                        "Token mint address (defaults to target token)"
-                    ),
+                    "description": ("Token mint address (defaults to target token)"),
                 },
             },
         },

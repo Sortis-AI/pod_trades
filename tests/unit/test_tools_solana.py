@@ -7,12 +7,18 @@ import pytest
 
 from pod_the_trader.tools.registry import ToolRegistry
 from pod_the_trader.tools.solana_tools import register_tools
+from pod_the_trader.trading.portfolio import Portfolio
 
 
 @pytest.fixture()
-def registry() -> ToolRegistry:
+def portfolio() -> Portfolio:
+    return Portfolio(rpc_url="https://api.devnet.solana.com", jupiter_dex=MagicMock())
+
+
+@pytest.fixture()
+def registry(portfolio: Portfolio) -> ToolRegistry:
     reg = ToolRegistry()
-    register_tools(reg, rpc_url="https://api.devnet.solana.com")
+    register_tools(reg, rpc_url="https://api.devnet.solana.com", portfolio=portfolio)
     return reg
 
 
@@ -57,13 +63,13 @@ class TestGetSplTokenBalance:
         resp.value = [acc]
 
         mock_client = AsyncMock()
-        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(
-            return_value=resp
-        )
+        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(return_value=resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("pod_the_trader.tools.solana_tools.AsyncClient", return_value=mock_client):
+        # get_spl_token_balance now delegates to Portfolio.get_token_balance
+        # so we must patch the AsyncClient that path uses.
+        with patch("pod_the_trader.trading.portfolio.AsyncClient", return_value=mock_client):
             result = json.loads(
                 await registry.execute(
                     "get_spl_token_balance",

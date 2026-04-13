@@ -1,0 +1,111 @@
+/* Pod The Trader — Textual stylesheet.
+ *
+ * Aims for a btop/SOT aesthetic: dark navy background, rounded Unicode
+ * borders in a muted steel blue, yellow panel titles, cyan body text,
+ * green for gains and magenta/red for losses.
+ */
+
+Screen {
+    background: #0a0f1e;
+    color: #00d4ff;
+}
+
+/* Top-level 3-row grid layout (header / main body / footer). */
+#root {
+    layout: grid;
+    grid-size: 1 4;
+    grid-rows: 1 1fr 1fr 1fr;
+    grid-gutter: 0;
+}
+
+#header-bar {
+    background: #0a0f1e;
+    color: #ffcc00;
+    height: 1;
+    padding: 0 1;
+}
+
+/* Three main rows: top (portfolio/health/ledger), middle (prices/level5),
+ * bottom (logo/cycle/log).  Each row is its own grid.
+ */
+.row {
+    layout: grid;
+    grid-gutter: 0 0;
+}
+
+#row-top {
+    grid-size: 3 1;
+    grid-columns: 2fr 1fr 3fr;
+}
+
+#row-mid {
+    grid-size: 2 1;
+    grid-columns: 1fr 77;
+}
+
+#row-bot {
+    grid-size: 2 1;
+    grid-columns: 1fr 3fr;
+}
+
+/* Every panel is a bordered box with a yellow title. */
+.panel {
+    border: round #2a3d5e;
+    background: #0a0f1e;
+    padding: 0 1;
+}
+
+.panel:focus-within {
+    border: round #ffcc00;
+}
+
+.panel > .title {
+    color: #ffcc00;
+    text-style: bold;
+}
+
+/* Value styles — gain / loss / neutral. */
+.gain {
+    color: #00ff88;
+}
+
+.loss {
+    color: #ff3366;
+}
+
+.dim {
+    color: #556677;
+}
+
+.accent {
+    color: #ffcc00;
+}
+
+/* DataTable tweaks for the ledger. */
+DataTable {
+    background: #0a0f1e;
+}
+
+DataTable > .datatable--header {
+    background: #0a0f1e;
+    color: #ffcc00;
+}
+
+DataTable > .datatable--cursor {
+    background: #1e2a4a;
+}
+
+/* Sparkline colors. */
+Sparkline > .sparkline--max-color {
+    color: #00ff88;
+}
+
+Sparkline > .sparkline--min-color {
+    color: #2a3d5e;
+}
+
+/* RichLog (log tail) styling. */
+RichLog {
+    background: #0a0f1e;
+    color: #556677;
+}
