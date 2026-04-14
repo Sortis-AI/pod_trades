@@ -35,8 +35,7 @@ def register_tools(
         requested = args.get("address")
         if requested and wallet_address and requested != wallet_address:
             logger.warning(
-                "get_solana_balance ignoring hallucinated address %s — "
-                "using bot wallet %s instead",
+                "get_solana_balance ignoring hallucinated address %s — using bot wallet %s instead",
                 requested,
                 wallet_address,
             )
@@ -64,9 +63,7 @@ def register_tools(
             "properties": {
                 "address": {
                     "type": "string",
-                    "description": (
-                        "Solana wallet address (defaults to bot's wallet)"
-                    ),
+                    "description": ("Solana wallet address (defaults to bot's wallet)"),
                 },
             },
         },
@@ -113,8 +110,7 @@ def register_tools(
                 "owner_address": {
                     "type": "string",
                     "description": (
-                        "Wallet address that owns the tokens "
-                        "(defaults to bot's wallet)"
+                        "Wallet address that owns the tokens (defaults to bot's wallet)"
                     ),
                 },
                 "mint_address": {"type": "string", "description": "Token mint address"},
@@ -198,9 +194,7 @@ def register_tools(
             "properties": {
                 "address": {
                     "type": "string",
-                    "description": (
-                        "Solana wallet address (defaults to bot's wallet)"
-                    ),
+                    "description": ("Solana wallet address (defaults to bot's wallet)"),
                 },
                 "limit": {
                     "type": "integer",

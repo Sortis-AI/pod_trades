@@ -66,9 +66,7 @@ class TestGetSplTokenBalanceZero:
         ata_resp.value.ui_amount = None
 
         mock_client = AsyncMock()
-        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(
-            return_value=empty_resp
-        )
+        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(return_value=empty_resp)
         mock_client.get_token_account_balance = AsyncMock(return_value=ata_resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
@@ -94,9 +92,7 @@ class TestGetSplTokenBalanceZero:
         mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(
             side_effect=Exception("not found")
         )
-        mock_client.get_token_account_balance = AsyncMock(
-            side_effect=Exception("ata also failed")
-        )
+        mock_client.get_token_account_balance = AsyncMock(side_effect=Exception("ata also failed"))
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 

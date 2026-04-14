@@ -150,8 +150,7 @@ class Portfolio:
         # All paths failed — surface the real error so the user can act on it.
         if errors:
             logger.warning(
-                "Could not read token balance for %s on wallet %s. "
-                "All RPC paths failed: %s",
+                "Could not read token balance for %s on wallet %s. All RPC paths failed: %s",
                 mint_address[:8],
                 owner_address[:8],
                 " | ".join(errors),

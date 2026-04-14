@@ -33,10 +33,6 @@ def test_tui_app_is_publisher() -> None:
     from pod_the_trader.tui.app import PodDashboardApp
     from pod_the_trader.tui.publisher import Publisher
 
-    required = [
-        name for name in dir(Publisher) if name.startswith("on_")
-    ]
+    required = [name for name in dir(Publisher) if name.startswith("on_")]
     for method_name in required:
-        assert hasattr(PodDashboardApp, method_name), (
-            f"PodDashboardApp missing {method_name}"
-        )
+        assert hasattr(PodDashboardApp, method_name), f"PodDashboardApp missing {method_name}"

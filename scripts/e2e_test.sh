@@ -31,9 +31,11 @@ else
     echo "[setup] preserving existing state ($([ -f "$STATE" ] && echo "exists" || echo "absent"))"
 fi
 
-# Run the bot with timeout
+# Run the bot with timeout. The bot now shows a disclaimer on every
+# startup that blocks until "I ACCEPT" is typed — pipe it in so the e2e
+# harness doesn't hang.
 echo "[run] starting bot for ${DURATION}s..."
-timeout "$DURATION" env TARGET_TOKEN_ADDRESS="$TARGET" uv run pod-the-trader > "$LOG" 2>&1
+echo "I ACCEPT" | timeout "$DURATION" env TARGET_TOKEN_ADDRESS="$TARGET" uv run pod-the-trader > "$LOG" 2>&1
 EXIT=$?
 echo "[run] exit code: $EXIT (124 = timeout, which is expected)"
 echo ""

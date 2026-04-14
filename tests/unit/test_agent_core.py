@@ -251,3 +251,71 @@ class TestLowBalance:
 
         result = await agent.run_turn("Check status")
         assert result == "OK"
+
+
+class TestDecisionExecutionEnforcement:
+    """If the model writes DECISION: SELL/BUY but never calls execute_swap,
+    ``_enforce_decision_execution`` must nudge the model once more and then
+    (if the model still doesn't comply) append a system-override HOLD line
+    so the displayed decision matches what actually happened.
+    """
+
+    async def test_unexecuted_sell_is_downgraded_to_hold(self, agent: TradingAgent) -> None:
+        # The nudge call goes through run_turn, which hits the LLM client.
+        # Stub it so we control the follow-up response without touching the
+        # trade loop at all. The follow-up still claims SELL → override fires.
+        resp2 = _make_response(content="DECISION: SELL — I really mean it this time.")
+        agent._client.chat.completions.create = AsyncMock(return_value=resp2)
+
+        trade_count_before = agent.trade_count  # 0
+        response = "DECISION: SELL — Time to take profit."
+        result = await agent._enforce_decision_execution(response, trade_count_before)
+
+        assert "system override" in result
+        assert "DECISION: HOLD" in result
+        # Trade count unchanged (no execute_swap ever fired)
+        assert agent.trade_count == trade_count_before
+
+    async def test_unexecuted_sell_can_be_rescued_by_followup_hold(
+        self, agent: TradingAgent
+    ) -> None:
+        # Follow-up response correctly downgrades to HOLD on its own — no
+        # override needed.
+        resp2 = _make_response(content="DECISION: HOLD — On reflection, staying put.")
+        agent._client.chat.completions.create = AsyncMock(return_value=resp2)
+
+        result = await agent._enforce_decision_execution(
+            "DECISION: SELL — Time to take profit.", agent.trade_count
+        )
+        assert "system override" not in result
+        # Parser still sees the final DECISION: HOLD from the follow-up
+        assert "DECISION: HOLD" in result
+
+    async def test_executed_sell_is_not_enforced(self, agent: TradingAgent) -> None:
+        # Simulate that trade_count increased during run_turn (as it would
+        # if execute_swap had actually been called). The enforcement path
+        # should become a no-op and the response returned unchanged.
+        trade_count_before = agent.trade_count
+        agent._trade_count = trade_count_before + 1
+
+        original = "DECISION: SELL — Took profit."
+        result = await agent._enforce_decision_execution(original, trade_count_before)
+        assert result == original
+
+    async def test_hold_decision_is_not_enforced(self, agent: TradingAgent) -> None:
+        # HOLD doesn't require a swap, so enforcement is a no-op even if
+        # trade_count is unchanged.
+        result = await agent._enforce_decision_execution(
+            "DECISION: HOLD — No signal.", agent.trade_count
+        )
+        assert "system override" not in result
+        assert result == "DECISION: HOLD — No signal."
+
+    async def test_unknown_decision_format_gets_nudged(self, agent: TradingAgent) -> None:
+        # Separate helper: _enforce_decision_format sends a nudge if the
+        # response has no parseable DECISION line.
+        resp2 = _make_response(content="DECISION: HOLD — Stable.")
+        agent._client.chat.completions.create = AsyncMock(return_value=resp2)
+
+        result = await agent._enforce_decision_format("Some rambling analysis.")
+        assert "DECISION: HOLD" in result

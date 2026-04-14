@@ -62,9 +62,7 @@ def populated_ledger(ledger: TradeLedger) -> TradeLedger:
 
 
 class TestPodDashboardAppBoot:
-    async def test_app_mounts_cleanly(
-        self, ledger: TradeLedger, price_log: PriceLog
-    ) -> None:
+    async def test_app_mounts_cleanly(self, ledger: TradeLedger, price_log: PriceLog) -> None:
         app = PodDashboardApp(
             ledger=ledger,
             price_log=price_log,

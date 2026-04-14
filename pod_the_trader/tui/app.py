@@ -26,6 +26,8 @@ from .widgets.portfolio import PortfolioWidget
 from .widgets.prices import PriceActionWidget
 
 if TYPE_CHECKING:
+    from pod_the_trader.data.lot_ledger import LotLedger
+
     from .publisher import Publisher
 
 logger = logging.getLogger(__name__)
@@ -53,10 +55,12 @@ class PodDashboardApp(App):
         ledger: TradeLedger,
         price_log: PriceLog,
         target_mint: str,
+        lot_ledger: LotLedger | None = None,
         run_agent: callable | None = None,
     ) -> None:
         super().__init__()
         self._ledger = ledger
+        self._lot_ledger = lot_ledger
         self._price_log = price_log
         self._target_mint = target_mint
         self._run_agent = run_agent
@@ -64,6 +68,9 @@ class PodDashboardApp(App):
         self._cycle_started_at: float | None = None
         self._header_text = "🤖 pod-the-trader · starting up…"
         self._log_handler: LogTailHandler | None = None
+        # Cache the latest token price seen via on_portfolio_snapshot so
+        # health/cycle handlers can reprice the lot ledger without an RPC.
+        self._latest_token_price: float = 0.0
 
     # ------------------------------------------------------------------ layout
 
@@ -97,7 +104,7 @@ class PodDashboardApp(App):
 
         # Seed an initial portfolio snapshot from whatever's on disk.
         self.query_one("#portfolio", PortfolioWidget).snapshot = None
-        self.query_one("#health", HealthWidget).summary = self._ledger.summary()
+        self._refresh_health()
 
         # Kick off the trading agent as a background worker.
         if self._run_agent is not None:
@@ -122,6 +129,26 @@ class PodDashboardApp(App):
         with contextlib.suppress(Exception):
             self.query_one("#header-bar", Static).update(text)
 
+    def _refresh_health(self, summary: dict[str, Any] | None = None) -> None:
+        """Push the latest P&L summary into the Health widget.
+
+        Prefers an explicitly provided ``summary`` (e.g. from an
+        ``on_cycle_complete`` event), then falls back to a fresh lot-ledger
+        replay at the latest cached token price, then to the legacy
+        TradeLedger summary as a last resort.
+        """
+        try:
+            health = self.query_one("#health", HealthWidget)
+        except Exception:
+            return
+        if summary is not None:
+            health.summary = summary
+            return
+        if self._lot_ledger is not None and self._target_mint:
+            health.summary = self._lot_ledger.summary(self._target_mint, self._latest_token_price)
+            return
+        health.summary = self._ledger.summary()
+
     def on_startup(
         self,
         *,
@@ -140,8 +167,7 @@ class PodDashboardApp(App):
             f"🤖 pod-the-trader · {short_wallet} · {symbol} · {model} · every {cooldown}s"
         )
         self._set_header(self._header_text)
-        if ledger_summary:
-            self.query_one("#health", HealthWidget).summary = ledger_summary
+        self._refresh_health(ledger_summary)
 
         # Propagate the symbol to the panels that label the target token.
         with contextlib.suppress(Exception):
@@ -149,9 +175,7 @@ class PodDashboardApp(App):
             portfolio.target_symbol = symbol
             portfolio.wallet_address = wallet
         with contextlib.suppress(Exception):
-            self.query_one("#price-action", PriceActionWidget).set_label(
-                self._target_mint, symbol
-            )
+            self.query_one("#price-action", PriceActionWidget).set_label(self._target_mint, symbol)
         with contextlib.suppress(Exception):
             level5 = self.query_one("#level5", Level5Widget)
             level5.model = model
@@ -173,9 +197,11 @@ class PodDashboardApp(App):
 
         if snap := summary.get("portfolio"):
             self.query_one("#portfolio", PortfolioWidget).snapshot = snap
+            with contextlib.suppress(Exception):
+                self._latest_token_price = float(snap.get("token_price_usd", 0.0) or 0.0)
 
-        # Refresh health summary from the ledger (might have new trades).
-        self.query_one("#health", HealthWidget).summary = self._ledger.summary()
+        # Refresh health from the lot ledger (or whatever the agent passed).
+        self._refresh_health(summary.get("ledger_summary"))
 
         # Refresh sparklines from the price log.
         with contextlib.suppress(Exception):
@@ -188,7 +214,7 @@ class PodDashboardApp(App):
 
     def on_trade(self, entry: dict[str, Any], pnl: dict[str, Any]) -> None:
         self.query_one("#ledger", LedgerWidget).refresh_rows()
-        self.query_one("#health", HealthWidget).summary = self._ledger.summary()
+        self._refresh_health()
         log_widget = self.query_one("#log", LogTailWidget)
         log_widget.append(
             "TRADE",
@@ -204,6 +230,8 @@ class PodDashboardApp(App):
 
     def on_portfolio_snapshot(self, snapshot: dict[str, Any]) -> None:
         self.query_one("#portfolio", PortfolioWidget).snapshot = snapshot
+        with contextlib.suppress(Exception):
+            self._latest_token_price = float(snapshot.get("token_price_usd", 0.0) or 0.0)
 
     def on_level5_balance(self, usdc: float, credit: float) -> None:
         widget = self.query_one("#level5", Level5Widget)

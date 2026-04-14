@@ -21,7 +21,17 @@ TEST_MINT = "TokenMintAddress111111111111111111111111111"
 @pytest.fixture()
 def mock_dex() -> JupiterDex:
     dex = MagicMock(spec=JupiterDex)
-    dex.get_token_price = AsyncMock(return_value=0.15)
+
+    # SOL=$100, USDC=$1, TEST_MINT=$0.15 so existing swap tests (0.1 SOL
+    # = $10) clear the $1 min-trade-size guard.
+    async def _price(mint: str) -> float:
+        if mint == SOL_MINT:
+            return 100.0
+        if mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v":
+            return 1.0
+        return 0.15
+
+    dex.get_token_price = AsyncMock(side_effect=_price)
     dex.execute_swap = AsyncMock(
         return_value=TradeExecution(
             success=True,
@@ -62,6 +72,9 @@ def registry_with_keypair(
     mock_portfolio: Portfolio,
     ledger: TradeLedger,
 ) -> ToolRegistry:
+    # Override the target token to TEST_MINT so a SOL→TEST_MINT swap is
+    # semantically a BUY (we're acquiring the configured target).
+    sample_config._set_dotted(sample_config._data, "trading.target_token_address", TEST_MINT)
     reg = ToolRegistry()
     register_tools(
         reg,

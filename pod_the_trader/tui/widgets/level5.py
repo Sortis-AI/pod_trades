@@ -41,11 +41,20 @@ class Level5Widget(Static):
         self.update(self._format())
 
     def watch_usdc(self) -> None:
+        # Seed on the first real reading. The agent only publishes balance
+        # events after a successful Level5 /balance fetch (see
+        # print_startup_banner), so the first watch fire is authoritative.
+        # We deliberately do NOT require self.usdc > 0 — a legitimate
+        # zero USDC balance (user with only credits) must still seed.
         if self._session_start_usdc is None:
             self._session_start_usdc = self.usdc
         self.update(self._format())
 
     def watch_credit(self) -> None:
+        # Same logic as watch_usdc. A user with no promotional credits
+        # has credit == 0.0 always, and we still need to seed so the
+        # USDC-side spend calculation isn't gated on credit being
+        # non-None.
         if self._session_start_credit is None:
             self._session_start_credit = self.credit
         self.update(self._format())
@@ -73,13 +82,14 @@ class Level5Widget(Static):
         bar_w = self._bar_width()
 
         # Session inference cost: delta from the very first balance we saw.
+        # Each side is computed independently — a user with no promotional
+        # credits has session_start_credit pinned at 0 which should NOT
+        # gate out the (real) USDC spend on the other line.
         spent_usdc = 0.0
         spent_credit = 0.0
-        if (
-            self._session_start_usdc is not None
-            and self._session_start_credit is not None
-        ):
+        if self._session_start_usdc is not None:
             spent_usdc = max(0.0, self._session_start_usdc - self.usdc)
+        if self._session_start_credit is not None:
             spent_credit = max(0.0, self._session_start_credit - self.credit)
         spent_total = spent_usdc + spent_credit
 
@@ -105,8 +115,7 @@ class Level5Widget(Static):
             # Click the URL to open in the default browser. Textual fires
             # action_open_dashboard on this widget when the markup is clicked.
             lines.append(
-                f"[dim]dashboard:[/] "
-                f"[@click=open_dashboard][#00d4ff]{self.dashboard_url}[/][/]"
+                f"[dim]dashboard:[/] [@click=open_dashboard][#00d4ff]{self.dashboard_url}[/][/]"
             )
         else:
             lines.append("[dim]dashboard:[/] [dim](unavailable)[/]")
@@ -132,6 +141,4 @@ class Level5Widget(Static):
 def _bar(pct: float, width: int) -> str:
     filled = int(round(pct / 100 * width))
     filled = max(0, min(width, filled))
-    return (
-        "[#00d4ff]" + ("█" * filled) + "[/]" + "[dim]" + ("░" * (width - filled)) + "[/]"
-    )
+    return "[#00d4ff]" + ("█" * filled) + "[/]" + "[dim]" + ("░" * (width - filled)) + "[/]"

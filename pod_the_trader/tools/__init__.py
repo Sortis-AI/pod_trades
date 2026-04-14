@@ -2,6 +2,7 @@
 
 from pod_the_trader.config import Config
 from pod_the_trader.data.ledger import TradeLedger
+from pod_the_trader.data.lot_ledger import LotLedger
 from pod_the_trader.data.price_log import PriceLog
 from pod_the_trader.tools.registry import ToolRegistry
 from pod_the_trader.trading.dex import JupiterDex
@@ -19,6 +20,7 @@ def create_registry(
     rpc_url: str,
     wallet_address: str,
     ledger: TradeLedger | None = None,
+    lot_ledger: LotLedger | None = None,
     price_log: PriceLog | None = None,
     session_id: str = "",
     publisher: Publisher | None = None,
@@ -47,6 +49,7 @@ def create_registry(
         portfolio=portfolio,
         wallet_address=wallet_address,
         ledger=ledger,
+        lot_ledger=lot_ledger,
         session_id=session_id,
         publisher=publisher,
     )

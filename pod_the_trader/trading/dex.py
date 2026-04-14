@@ -15,6 +15,7 @@ from pod_the_trader.trading.transaction import TransactionBuilder
 logger = logging.getLogger(__name__)
 
 SOL_MINT = "So11111111111111111111111111111111111111112"
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
 
 @dataclass

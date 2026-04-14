@@ -56,15 +56,19 @@ class PortfolioWidget(Static):
 
         sol_ui = snapshot.get("sol_ui", 0.0)
         sol_value = snapshot.get("sol_value_usd", 0.0)
+        usdc_ui = snapshot.get("usdc_ui", 0.0)
+        usdc_value = snapshot.get("usdc_value_usd", 0.0)
         token_ui = snapshot.get("token_ui", 0.0)
         token_value = snapshot.get("token_value_usd", 0.0)
-        total = snapshot.get("total_usd", 0.0) or (sol_value + token_value)
+        total = snapshot.get("total_usd", 0.0) or (sol_value + usdc_value + token_value)
 
         sol_pct = (sol_value / total * 100) if total > 0 else 0
+        usdc_pct = (usdc_value / total * 100) if total > 0 else 0
         tok_pct = (token_value / total * 100) if total > 0 else 0
 
         bar_w = self._bar_width()
         sol_bar = _bar(sol_pct, bar_w)
+        usdc_bar = _bar(usdc_pct, bar_w)
         tok_bar = _bar(tok_pct, bar_w)
 
         symbol = (self.target_symbol or "TARGET")[:8]
@@ -73,6 +77,9 @@ class PortfolioWidget(Static):
             title,
             f"[b #00d4ff]SOL[/]     {sol_ui:>12.6f}  [b]${sol_value:>10,.2f}[/]",
             f"  {sol_bar} [dim]{sol_pct:5.1f}%[/]",
+            "",
+            f"[b #00d4ff]USDC[/]    {usdc_ui:>12,.4f}  [b]${usdc_value:>10,.2f}[/]",
+            f"  {usdc_bar} [dim]{usdc_pct:5.1f}%[/]",
             "",
             f"[b #00d4ff]{symbol:<6}[/]  {token_ui:>12,.4f}  [b]${token_value:>10,.2f}[/]",
             f"  {tok_bar} [dim]{tok_pct:5.1f}%[/]",
@@ -84,8 +91,7 @@ class PortfolioWidget(Static):
             # Click the wallet to copy to clipboard. Textual fires
             # action_copy_wallet on this widget when the markup is clicked.
             lines.append(
-                f"[dim]wallet:[/] "
-                f"[@click=copy_wallet][#00d4ff]{self.wallet_address}[/][/]"
+                f"[dim]wallet:[/] [@click=copy_wallet][#00d4ff]{self.wallet_address}[/][/]"
             )
         return "\n".join(lines)
 

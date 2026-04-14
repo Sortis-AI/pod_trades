@@ -22,8 +22,9 @@ from pod_the_trader.data.ledger import (
     format_trade_pnl,
     now_iso,
 )
+from pod_the_trader.data.lot_ledger import LotLedger, emit_trade_events
 from pod_the_trader.tools.registry import ToolRegistry
-from pod_the_trader.trading.dex import SOL_MINT, JupiterDex
+from pod_the_trader.trading.dex import SOL_MINT, USDC_MINT, JupiterDex
 from pod_the_trader.trading.portfolio import Portfolio
 from pod_the_trader.tui.publisher import NullPublisher, Publisher
 
@@ -205,6 +206,7 @@ def register_tools(
     portfolio: Portfolio,
     wallet_address: str,
     ledger: TradeLedger | None = None,
+    lot_ledger: LotLedger | None = None,
     session_id: str = "",
     publisher: Publisher | None = None,
 ) -> None:
@@ -213,15 +215,108 @@ def register_tools(
     """Register all trading tools."""
 
     _keypair_holder: dict[str, Keypair | None] = {"keypair": None}
+    # Late-bound: the agent calls registry._set_target_symbol("SQUIRE")
+    # once Jupiter token metadata is fetched. Until then we still resolve
+    # SOL/USDC aliases without it.
+    _symbol_holder: dict[str, str] = {"target": ""}
 
     def set_keypair(kp: Keypair) -> None:
         _keypair_holder["keypair"] = kp
 
+    def set_target_symbol(symbol: str) -> None:
+        _symbol_holder["target"] = (symbol or "").strip()
+
     registry._set_trading_keypair = set_keypair  # type: ignore[attr-defined]
+    registry._set_target_symbol = set_target_symbol  # type: ignore[attr-defined]
+
+    def _resolve_mint(value: str) -> str:
+        """Translate a symbol or alias into a real mint address.
+
+        The model frequently passes ``"SOL"`` / ``"USDC"`` / ``"SQUIRE"``
+        (the symbol) instead of the 43-char base58 mint, even when the
+        system prompt asks for the address. Rather than refuse those
+        calls (which the model has no way to recover from cleanly), we
+        accept the common aliases and translate to the real mint.
+
+        Anything that doesn't match an alias is returned untouched — the
+        route guard then has the final say on whether it's tradeable.
+        """
+        if not isinstance(value, str):
+            return value
+        v = value.strip().upper()
+        if v in ("SOL", "WSOL", "WRAPPED SOL"):
+            return SOL_MINT
+        if v in ("USDC", "USD"):
+            return USDC_MINT
+        tgt_symbol = _symbol_holder["target"]
+        if tgt_symbol and v == tgt_symbol.upper():
+            return config.get("trading.target_token_address", "") or value
+        return value
+
+    def _check_route(input_mint: str, output_mint: str) -> str | None:
+        """Reject swap routes outside the allowed universe.
+
+        The bot is restricted to trading SOL, USDC, and the configured
+        target token. Any other mint as input or output is refused at the
+        tool layer so the model can't accidentally route a swap through
+        an unexpected asset (and so we don't have to track arbitrary
+        tokens in the portfolio / cost-basis ledger).
+        """
+        target = config.get("trading.target_token_address", "")
+        allowed = {SOL_MINT, USDC_MINT}
+        if target:
+            allowed.add(target)
+        if input_mint not in allowed or output_mint not in allowed:
+            return (
+                f"Disallowed swap route {input_mint[:8]}…→{output_mint[:8]}…: "
+                "only SOL, USDC, and the configured target token are tradeable. "
+                "Pass the FULL base58 mint address (not the ticker symbol) on "
+                "each side: SOL=" + SOL_MINT + ", USDC=" + USDC_MINT + "."
+            )
+        return None
+
+    async def _check_min_size(input_mint: str, amount_ui: float) -> str | None:
+        """Reject swaps below ``trading.min_trade_size_usdc``.
+
+        The config has a ``min_trade_size_usdc`` knob (default $1) so the
+        bot doesn't emit dust trades where network fees exceed the trade
+        value. Without this check the model can happily execute a sell of
+        0.25 tokens for $0.00004 of proceeds while paying ~$0.0004 of gas,
+        which is a guaranteed money-loser.
+
+        Computes the estimated USD value of the INPUT leg by fetching the
+        input mint's spot price from Jupiter. Returns an error string to
+        send back to the model (so it can resize and retry), or ``None``
+        if the trade is above the minimum.
+        """
+        min_usdc = float(config.get("trading.min_trade_size_usdc", 1.0) or 0.0)
+        if min_usdc <= 0:
+            return None
+        try:
+            price = await jupiter_dex.get_token_price(input_mint)
+        except Exception as e:
+            logger.warning(
+                "Min-size check: failed to fetch price for %s (%s); allowing trade to proceed.",
+                input_mint[:8],
+                e,
+            )
+            return None
+        value_usd = amount_ui * price
+        if value_usd < min_usdc:
+            return (
+                f"Trade size ${value_usd:.6f} is below the "
+                f"min_trade_size_usdc of ${min_usdc:.2f}. Network fees "
+                "would exceed the trade value. Increase amount_in or "
+                "percent_of_balance so the USD value of the input leg "
+                f"is at least ${min_usdc:.2f}."
+            )
+        return None
 
     async def get_swap_quote(args: dict[str, Any]) -> dict[str, Any]:
-        input_mint = args["input_mint"]
-        output_mint = args["output_mint"]
+        input_mint = _resolve_mint(args["input_mint"])
+        output_mint = _resolve_mint(args["output_mint"])
+        if route_err := _check_route(input_mint, output_mint):
+            return {"error": route_err}
         slippage_bps = int(args.get("slippage_bps", config.get("trading.max_slippage_bps", 50)))
 
         amount_raw, in_decimals, amount_ui, err = await _resolve_amount_raw(
@@ -229,6 +324,9 @@ def register_tools(
         )
         if err:
             return {"error": err}
+
+        if size_err := await _check_min_size(input_mint, amount_ui):
+            return {"error": size_err}
 
         out_decimals = await _fetch_decimals(output_mint)
         quote = await jupiter_dex.get_quote(input_mint, output_mint, amount_raw, slippage_bps)
@@ -279,8 +377,10 @@ def register_tools(
         if keypair is None:
             return {"error": "Trading keypair not configured"}
 
-        input_mint = args["input_mint"]
-        output_mint = args["output_mint"]
+        input_mint = _resolve_mint(args["input_mint"])
+        output_mint = _resolve_mint(args["output_mint"])
+        if route_err := _check_route(input_mint, output_mint):
+            return {"error": route_err}
         slippage_bps = int(args.get("slippage_bps", config.get("trading.max_slippage_bps", 50)))
 
         amount_raw, input_decimals, amount_ui, err = await _resolve_amount_raw(
@@ -288,6 +388,10 @@ def register_tools(
         )
         if err:
             return {"error": err}
+
+        if size_err := await _check_min_size(input_mint, amount_ui):
+            logger.warning("Rejected below-minimum swap: %s", size_err)
+            return {"error": size_err}
 
         output_decimals = await _fetch_decimals(output_mint)
 
@@ -304,15 +408,32 @@ def register_tools(
         )
 
         if result.success:
-            side = "buy" if input_mint == SOL_MINT else "sell"
+            # Side is defined relative to the configured target token, not
+            # to SOL. A USDC→TARGET swap is a BUY (we acquired target); a
+            # TARGET→USDC swap is a SELL. Anything else (SOL→USDC, etc.)
+            # is recorded as "swap" so it doesn't pollute trading P&L.
+            target_mint = config.get("trading.target_token_address", "")
+            if output_mint == target_mint:
+                side = "buy"
+            elif input_mint == target_mint:
+                side = "sell"
+            else:
+                side = "swap"
+
             sol_price = await _get_sol_price(jupiter_dex)
 
+            # Price each leg independently from Jupiter — never assume one
+            # side is SOL or that input and output share a price (a recent
+            # bug recorded a USDC→TARGET buy with USDC's $1 price applied
+            # to the target token, producing a $74k phantom value).
             try:
-                target_price = await jupiter_dex.get_token_price(
-                    output_mint if side == "buy" else input_mint
-                )
+                input_price = await jupiter_dex.get_token_price(input_mint)
             except Exception:
-                target_price = 0.0
+                input_price = 0.0
+            try:
+                output_price = await jupiter_dex.get_token_price(output_mint)
+            except Exception:
+                output_price = 0.0
 
             input_amount_ui = result.in_amount / (10**input_decimals)
             expected_out_ui = result.out_amount / (10**output_decimals)
@@ -321,9 +442,6 @@ def register_tools(
                 if result.actual_out_amount
                 else expected_out_ui
             )
-
-            input_price = sol_price if input_mint == SOL_MINT else target_price
-            output_price = sol_price if output_mint == SOL_MINT else target_price
 
             input_value_usd = input_amount_ui * input_price
             output_value_usd = actual_out_ui * output_price
@@ -372,6 +490,27 @@ def register_tools(
                     model=config.get("agent.model", ""),
                 )
                 ledger.append(entry)
+
+                # Mirror the swap into the lot-based cost-basis ledger so
+                # open-position state stays consistent with the trade.
+                if lot_ledger is not None:
+                    try:
+                        lot_events = emit_trade_events(
+                            timestamp=entry.timestamp,
+                            input_mint=input_mint,
+                            input_qty=input_amount_ui,
+                            input_price_usd=input_price,
+                            output_mint=output_mint,
+                            output_qty=actual_out_ui,
+                            output_price_usd=output_price,
+                            gas_sol=gas_sol,
+                            sol_price_usd=sol_price,
+                            sol_mint=SOL_MINT,
+                            tx_sig=entry.signature,
+                        )
+                        lot_ledger.append_many(lot_events)
+                    except Exception as e:
+                        logger.warning("Failed to append lot events: %s", e)
 
                 try:
                     pnl = ledger.per_trade_pnl(entry)
@@ -484,18 +623,27 @@ def register_tools(
     )
 
     async def check_swap_feasibility(args: dict[str, Any]) -> dict[str, Any]:
-        input_mint = args["input_mint"]
-        output_mint = args["output_mint"]
+        input_mint = _resolve_mint(args["input_mint"])
+        output_mint = _resolve_mint(args["output_mint"])
+        if route_err := _check_route(input_mint, output_mint):
+            return {"error": route_err}
         max_impact = args.get(
             "max_impact_pct",
             config.get("trading.max_price_impact_pct", 5.0),
         )
 
-        amount_raw, _decimals, _amount_ui, err = await _resolve_amount_raw(
+        amount_raw, _decimals, amount_ui, err = await _resolve_amount_raw(
             args, input_mint, portfolio, wallet_address
         )
         if err:
             return {"error": err}
+
+        if size_err := await _check_min_size(input_mint, amount_ui):
+            return {
+                "feasible": False,
+                "price_impact_pct": 0.0,
+                "reason": size_err,
+            }
 
         result = await jupiter_dex.check_feasibility(
             input_mint, output_mint, amount_raw, max_impact

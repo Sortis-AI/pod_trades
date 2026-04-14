@@ -238,6 +238,8 @@ class TestExecuteSwapPercentSizing:
         tmp_path: Path,
     ) -> ToolRegistry:
         _DECIMALS_CACHE[SQUIRE_MINT] = 6
+        # Configure SQUIRE as the target so the route guard accepts swaps.
+        sample_config._set_dotted(sample_config._data, "trading.target_token_address", SQUIRE_MINT)
         reg = ToolRegistry()
         ledger = TradeLedger(storage_dir=str(tmp_path))
         register_tools(

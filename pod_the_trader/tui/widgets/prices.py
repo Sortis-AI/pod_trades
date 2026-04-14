@@ -82,8 +82,7 @@ class PriceActionWidget(Static):
                 color = "#00ff88" if delta >= 0 else "#ff3366"
                 arrow = "▲" if delta >= 0 else "▼"
                 price_line = (
-                    f"{label_str} [b]${_fmt_price(latest)}[/]  "
-                    f"[{color}]{arrow} {delta:+.2f}%[/]"
+                    f"{label_str} [b]${_fmt_price(latest)}[/]  [{color}]{arrow} {delta:+.2f}%[/]"
                 )
             else:
                 price_line = f"{label_str} [b]${_fmt_price(latest)}[/]"

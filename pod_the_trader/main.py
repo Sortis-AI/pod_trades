@@ -15,13 +15,14 @@ from pod_the_trader.agent.core import TradingAgent
 from pod_the_trader.agent.memory import ConversationMemory
 from pod_the_trader.config import Config, ConfigError
 from pod_the_trader.data.ledger import TradeLedger
+from pod_the_trader.data.lot_ledger import LotLedger, migrate_from_trade_ledger
 from pod_the_trader.data.price_log import PriceLog
 from pod_the_trader.data.wallet_log import WalletLog, WalletSnapshot
 from pod_the_trader.level5.auth import Level5Auth
 from pod_the_trader.level5.client import Level5Client
 from pod_the_trader.level5.poller import BalancePoller, FundingOrchestrator
 from pod_the_trader.tools import create_registry
-from pod_the_trader.trading.dex import JupiterDex
+from pod_the_trader.trading.dex import SOL_MINT, USDC_MINT, JupiterDex
 from pod_the_trader.trading.portfolio import Portfolio
 from pod_the_trader.trading.transaction import TransactionBuilder
 from pod_the_trader.wallet.manager import WalletManager
@@ -181,12 +182,18 @@ async def async_main(config_path: str | None = None) -> None:
                 storage_dir=storage_dir,
             )
 
-            # 11. Persistent data: trade ledger + price log + wallet log
+            # 11. Persistent data: trade ledger + price log + wallet log +
+            #     lot ledger. The lot ledger is the authoritative model for
+            #     "what do I own and at what cost basis" — the trade ledger
+            #     stays as a human-readable trade history.
             session_id = uuid.uuid4().hex[:12]
             session_start = datetime.now(UTC)
             ledger = TradeLedger(storage_dir)
             price_log = PriceLog(storage_dir)
             wallet_log = WalletLog(storage_dir)
+            lot_ledger = LotLedger(storage_dir)
+            if not lot_ledger.exists():
+                migrate_from_trade_ledger(lot_ledger, ledger.read_all(), sol_mint=SOL_MINT)
 
             # 12. Tool registry
             registry = create_registry(
@@ -197,6 +204,7 @@ async def async_main(config_path: str | None = None) -> None:
                 rpc_url=rpc_url,
                 wallet_address=wallet_address,
                 ledger=ledger,
+                lot_ledger=lot_ledger,
                 price_log=price_log,
                 session_id=session_id,
             )
@@ -205,9 +213,12 @@ async def async_main(config_path: str | None = None) -> None:
             if hasattr(registry, "_set_trading_keypair"):
                 registry._set_trading_keypair(keypair)
 
-            # 13. Memory
+            # 13. Memory — start each process with a clean conversation. The
+            # prior session's assistant messages could be mid-action (e.g.
+            # "checking price…") and would prime the model to continue that
+            # intent on cycle 1 before any new reasoning runs. Bootstrap
+            # context (ledger + price log) provides continuity instead.
             memory = ConversationMemory(storage_dir)
-            memory.load()
 
             # 14. Agent
             agent = TradingAgent(
@@ -216,13 +227,14 @@ async def async_main(config_path: str | None = None) -> None:
                 registry,
                 memory,
                 ledger=ledger,
+                lot_ledger=lot_ledger,
                 price_log=price_log,
                 jupiter_dex=jupiter_dex,
                 wallet_log=wallet_log,
                 portfolio=portfolio,
                 wallet_address=wallet_address,
             )
-            agent.bootstrap_context()
+            await agent.bootstrap_context()
             await agent.print_startup_banner()
 
             # 15. Signal handling
@@ -267,8 +279,10 @@ async def async_main(config_path: str | None = None) -> None:
                     ledger,
                     wallet_log,
                     session_start,
+                    lot_ledger=lot_ledger,
                     live_snapshot=live_snap,
                     target_symbol=agent._target_symbol,
+                    target_mint=config.get("trading.target_token_address", ""),
                 )
                 logger.info(
                     "Shutdown complete. Trades this session: %d",
@@ -276,9 +290,7 @@ async def async_main(config_path: str | None = None) -> None:
                 )
 
 
-def _build_snap(
-    live_snapshot: dict | None, wallet_log: WalletLog
-) -> WalletSnapshot | None:
+def _build_snap(live_snapshot: dict | None, wallet_log: WalletLog) -> WalletSnapshot | None:
     """Prefer a live (just-fetched) snapshot over the last CSV row.
 
     The CSV log can contain stale zeros from earlier failed RPC reads; a
@@ -310,69 +322,82 @@ def _print_shutdown_summary(
     wallet_log: WalletLog,
     session_start: datetime,
     *,
+    lot_ledger: LotLedger | None = None,
     live_snapshot: dict | None = None,
     target_symbol: str = "",
+    target_mint: str = "",
 ) -> None:
-    """Print a P&L summary on shutdown: session + all-time + on-chain reality.
+    """Print a P&L summary on shutdown using the lot ledger as the source of truth.
 
-    ``live_snapshot`` is a freshly-fetched portfolio dict (from
-    ``TradingAgent._fetch_portfolio_snapshot``) and is preferred over the
-    last entry in ``wallet_snapshots.csv``. The CSV may contain stale
-    zeros from earlier failed RPC reads, so a live fetch is the only
+    The lot ledger tracks every position change — bot trades, deposits,
+    withdrawals, external swaps — so realized and unrealized P&L come
+    directly from cost-basis math. Reports SOL, USDC, and the configured
+    target token side-by-side. The legacy ``TradeLedger`` is still passed
+    in for a trade-count reference in the footer.
+
+    ``live_snapshot`` is a freshly-fetched portfolio dict and is preferred
+    over the last entry in ``wallet_snapshots.csv``; the CSV can contain
+    stale zeros from failed RPC reads, so a live fetch is the only
     trustworthy view at shutdown.
-
-    ``target_symbol`` is the ticker for the configured target token (e.g.
-    ``"SQUIRE"``); used as a label in the on-chain wallet block.
     """
-    all_time = ledger.summary()
-    session = ledger.summary(since=session_start)
     snap = _build_snap(live_snapshot, wallet_log)
     label = target_symbol or "target token"
 
-    def _fmt_ledger_block(label: str, s: dict) -> list[str]:
-        if s["trade_count"] == 0:
-            return [f"  {label}: no bot trades"]
-        sign = "+" if s["realized_pnl_usd"] >= 0 else ""
+    # Resolve current spot prices. Prefer the live snapshot, fall back to
+    # the last wallet log row, then to defaults.
+    target_price = 0.0
+    sol_price = 0.0
+    usdc_price = 1.0
+    if live_snapshot is not None:
+        target_price = float(live_snapshot.get("token_price_usd", 0.0) or 0.0)
+        sol_price = float(live_snapshot.get("sol_price_usd", 0.0) or 0.0)
+        usdc_price = float(live_snapshot.get("usdc_price_usd", 0.0) or 0.0) or 1.0
+    if target_price <= 0 and snap is not None:
+        target_price = float(snap.token_price_usd or 0.0)
 
-        # Mark-to-market: what would the position be worth if liquidated
-        # right now? Uses the on-chain token balance (real position) and
-        # the latest token price from the wallet snapshot.
-        m2m_line: str | None = None
-        if snap is not None and snap.token_mint:
-            position_value = snap.token_balance * snap.token_price_usd
-            net_invested = (
-                s["buy_volume_usd"] - s["sell_volume_usd"] + s["gas_spent_usd"]
-            )
-            m2m_pnl = position_value - net_invested
-            m2m_pct = (m2m_pnl / s["buy_volume_usd"] * 100) if s["buy_volume_usd"] else 0.0
-            msign = "+" if m2m_pnl >= 0 else ""
-            m2m_line = (
-                f"    mark-to-mkt:   {msign}${m2m_pnl:.4f} ({m2m_pct:+.2f}%)  "
-                f"[on-chain {snap.token_balance:,.2f} @ ${snap.token_price_usd:.8f} "
-                f"= ${position_value:.4f}]"
-            )
-
-        block = [
-            f"  {label}:",
-            f"    bot trades:    {s['trade_count']} "
-            f"({s['buy_count']} buys, {s['sell_count']} sells)",
-            f"    buy volume:    ${s['buy_volume_usd']:.4f}",
-            f"    sell volume:   ${s['sell_volume_usd']:.4f}",
-            f"    realized PnL:  {sign}${s['realized_pnl_usd']:.4f} "
-            f"({s['realized_pnl_pct']:+.2f}%)",
+    def _fmt_lot_subblock(title: str, mint: str, price: float) -> list[str]:
+        if lot_ledger is None or not mint:
+            return []
+        s = lot_ledger.summary(mint, price)
+        if s["trade_close_count"] == 0 and s["open_qty"] == 0:
+            return []
+        rsign = "+" if s["realized_pnl_usd"] >= 0 else ""
+        usign = "+" if s["unrealized_pnl_usd"] >= 0 else ""
+        tsign = "+" if s["total_pnl_usd"] >= 0 else ""
+        return [
+            f"    {title}:",
+            f"      closed trades:   {s['trade_close_count']}",
+            f"      open qty:        {s['open_qty']:,.6f}",
+            f"      cost basis:      ${s['cost_basis_usd']:.4f} (avg ${s['avg_cost_basis']:.8f})",
+            f"      position value:  ${s['position_value_usd']:.4f} @ ${price:.8f}",
+            f"      realized PnL:    {rsign}${s['realized_pnl_usd']:.4f}",
+            f"      unrealized PnL:  {usign}${s['unrealized_pnl_usd']:.4f}",
+            f"      total PnL:       {tsign}${s['total_pnl_usd']:.4f}",
+            f"      gas spent:       ${s['gas_usd']:.4f}",
         ]
-        if m2m_line is not None:
-            block.append(m2m_line)
-        block.extend(
-            [
-                f"    win rate:      {s['win_rate_pct']:.0f}%",
-                f"    avg buy:       ${s['avg_buy_price']:.8f}",
-                f"    avg sell:      ${s['avg_sell_price']:.8f}",
-                f"    bot pos:       {s['tokens_held']:,.4f} tokens (from bot trades only)",
-                f"    gas spent:     ${s['gas_spent_usd']:.4f} ({s['gas_spent_sol']:.6f} SOL)",
-            ]
-        )
-        return block
+
+    def _fmt_lot_block() -> list[str]:
+        if lot_ledger is None:
+            return ["  Cost-basis ledger: (no lot ledger configured)"]
+        sections: list[list[str]] = []
+        sol_section = _fmt_lot_subblock("SOL", SOL_MINT, sol_price)
+        if sol_section:
+            sections.append(sol_section)
+        usdc_section = _fmt_lot_subblock("USDC", USDC_MINT, usdc_price)
+        if usdc_section:
+            sections.append(usdc_section)
+        if target_mint and target_mint != USDC_MINT:
+            tgt_section = _fmt_lot_subblock(label, target_mint, target_price)
+            if tgt_section:
+                sections.append(tgt_section)
+        if not sections:
+            return ["  Cost-basis ledger: no positions tracked"]
+        out = ["  Cost-basis ledger:"]
+        for i, sec in enumerate(sections):
+            if i > 0:
+                out.append("")
+            out.extend(sec)
+        return out
 
     def _fmt_wallet_block() -> list[str]:
         if snap is None:
@@ -381,6 +406,13 @@ def _print_shutdown_summary(
             "  On-chain wallet (real position):",
             f"    SOL:             {snap.sol_balance:.6f} (${snap.sol_value_usd:.4f})",
         ]
+        # USDC line — pulled from the live snapshot since wallet_log doesn't
+        # carry it as a structured field.
+        if live_snapshot is not None:
+            usdc_ui = float(live_snapshot.get("usdc_ui", 0.0) or 0.0)
+            usdc_value = float(live_snapshot.get("usdc_value_usd", 0.0) or 0.0)
+            if usdc_ui > 0:
+                block.append(f"    USDC:            {usdc_ui:,.4f} (${usdc_value:.4f})")
         if snap.token_mint:
             block.append(
                 f"    {label}:    {snap.token_balance:,.4f} "
@@ -390,36 +422,20 @@ def _print_shutdown_summary(
         block.append(f"    total value:     ${snap.total_value_usd:.4f}")
         return block
 
-    # Reconciliation: bot ledger position vs on-chain reality
-    reconcile_lines: list[str] = []
-    if snap is not None and snap.token_mint and all_time["trade_count"] > 0:
-        bot_pos = all_time["tokens_held"]
-        actual_pos = snap.token_balance
-        diff = actual_pos - bot_pos
-        if abs(diff) > 0.01:
-            reconcile_lines = [
-                "  Reconciliation:",
-                f"    bot ledger says:  {bot_pos:,.4f} tokens",
-                f"    on-chain shows:   {actual_pos:,.4f} tokens",
-                f"    difference:       {diff:+,.4f} tokens "
-                "(external transfers — not tracked by bot)",
-            ]
-
+    trade_count = len(ledger.read_all())
     lines = [
         "",
         "================================================",
         " Pod The Trader — Shutdown Summary",
         "================================================",
-        *_fmt_ledger_block("This session", session),
-        "",
-        *_fmt_ledger_block("All time", all_time),
+        *_fmt_lot_block(),
         "",
         *_fmt_wallet_block(),
+        "",
+        f"  Legacy trade ledger: {trade_count} bot trades recorded",
+        "================================================",
+        "",
     ]
-    if reconcile_lines:
-        lines.append("")
-        lines.extend(reconcile_lines)
-    lines.extend(["================================================", ""])
     print("\n".join(lines))
 
 
@@ -449,6 +465,13 @@ def _resolve_ui_mode(requested: str) -> str:
 
 def main() -> None:
     """Sync entry point."""
+    # Require the user to accept the disclaimer on every startup. This runs
+    # BEFORE any heavy setup (no wallet load, no network calls, no Textual
+    # app) so a decline exits cleanly and leaves no side effects behind.
+    from pod_the_trader.disclaimer import require_acceptance
+
+    require_acceptance()
+
     config_path, ui_mode = _parse_cli_args(sys.argv[1:])
     resolved = _resolve_ui_mode(ui_mode)
     try:
@@ -529,11 +552,15 @@ async def async_main_tui(config_path: str | None = None) -> None:
             ledger = TradeLedger(storage_dir)
             price_log = PriceLog(storage_dir)
             wallet_log = WalletLog(storage_dir)
+            lot_ledger = LotLedger(storage_dir)
+            if not lot_ledger.exists():
+                migrate_from_trade_ledger(lot_ledger, ledger.read_all(), sol_mint=SOL_MINT)
             target_mint = config.get("trading.target_token_address", "")
 
             # Build the dashboard app (it IS the Publisher).
             app = PodDashboardApp(
                 ledger=ledger,
+                lot_ledger=lot_ledger,
                 price_log=price_log,
                 target_mint=target_mint,
             )
@@ -546,6 +573,7 @@ async def async_main_tui(config_path: str | None = None) -> None:
                 rpc_url=rpc_url,
                 wallet_address=wallet_address,
                 ledger=ledger,
+                lot_ledger=lot_ledger,
                 price_log=price_log,
                 session_id=session_id,
                 publisher=app,
@@ -554,7 +582,6 @@ async def async_main_tui(config_path: str | None = None) -> None:
                 registry._set_trading_keypair(keypair)
 
             memory = ConversationMemory(storage_dir)
-            memory.load()
 
             agent = TradingAgent(
                 config,
@@ -562,6 +589,7 @@ async def async_main_tui(config_path: str | None = None) -> None:
                 registry,
                 memory,
                 ledger=ledger,
+                lot_ledger=lot_ledger,
                 price_log=price_log,
                 jupiter_dex=jupiter_dex,
                 wallet_log=wallet_log,
@@ -569,7 +597,7 @@ async def async_main_tui(config_path: str | None = None) -> None:
                 wallet_address=wallet_address,
                 publisher=app,
             )
-            agent.bootstrap_context()
+            await agent.bootstrap_context()
 
             # Hand the trade_loop coroutine to the app as a worker factory.
             app._run_agent = agent.trade_loop
@@ -587,8 +615,10 @@ async def async_main_tui(config_path: str | None = None) -> None:
                     ledger,
                     wallet_log,
                     session_start,
+                    lot_ledger=lot_ledger,
                     live_snapshot=live_snap,
                     target_symbol=agent._target_symbol,
+                    target_mint=target_mint,
                 )
 
 
