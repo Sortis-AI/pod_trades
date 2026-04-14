@@ -43,6 +43,84 @@ class TestRegister:
         assert account.deposit_address == "NewDepAddr"
         assert account.balance_usdc == 0.0
 
+    @respx.mock
+    async def test_register_missing_deposit_address_raises_level5_error(self) -> None:
+        """Regression test: Level5's /v1/register response has been seen in
+        production without a ``deposit_address`` key. The original code did
+        ``data["deposit_address"]`` and crashed the whole startup flow with
+        an unhandled ``KeyError``. The client must detect the missing field
+        and raise a ``Level5Error`` with a clear message instead.
+        """
+        respx.post(f"{BASE_URL}/v1/register").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "api_token": "new_token_xyz",
+                    # deposit_address intentionally absent
+                    "balance_usdc": 0.0,
+                },
+            )
+        )
+        async with Level5Client(base_url=BASE_URL) as client:
+            with pytest.raises(Level5Error) as exc:
+                await client.register()
+        msg = str(exc.value).lower()
+        assert "deposit_address" in msg or "deposit address" in msg
+
+    @respx.mock
+    async def test_register_missing_api_token_raises_level5_error(self) -> None:
+        """Symmetric case: no api_token in the response."""
+        respx.post(f"{BASE_URL}/v1/register").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "deposit_address": "NewDepAddr",
+                    "balance_usdc": 0.0,
+                },
+            )
+        )
+        async with Level5Client(base_url=BASE_URL) as client:
+            with pytest.raises(Level5Error) as exc:
+                await client.register()
+        assert "api_token" in str(exc.value).lower()
+
+    @respx.mock
+    async def test_register_empty_deposit_address_raises_level5_error(self) -> None:
+        """Empty string is as unusable as missing — the wallet can't be
+        funded without a real deposit address, so the whole flow should
+        halt with a clear error.
+        """
+        respx.post(f"{BASE_URL}/v1/register").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "api_token": "new_token_xyz",
+                    "deposit_address": "",
+                    "balance_usdc": 0.0,
+                },
+            )
+        )
+        async with Level5Client(base_url=BASE_URL) as client:
+            with pytest.raises(Level5Error):
+                await client.register()
+
+    @respx.mock
+    async def test_register_null_deposit_address_raises_level5_error(self) -> None:
+        """JSON null → Python None. Same treatment as missing/empty."""
+        respx.post(f"{BASE_URL}/v1/register").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "api_token": "new_token_xyz",
+                    "deposit_address": None,
+                    "balance_usdc": 0.0,
+                },
+            )
+        )
+        async with Level5Client(base_url=BASE_URL) as client:
+            with pytest.raises(Level5Error):
+                await client.register()
+
 
 class TestGetBalance:
     @respx.mock
