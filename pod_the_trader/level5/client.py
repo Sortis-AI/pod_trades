@@ -80,11 +80,33 @@ class Level5Client:
         return self._http
 
     async def register(self) -> Level5Account:
-        """Register a new Level5 account."""
+        """Register a new Level5 account.
+
+        Validates both ``api_token`` and ``deposit_address`` in the
+        response. Missing, empty-string, or JSON-null values all raise
+        ``Level5Error`` — a partial response is worse than a clean
+        failure here, because an account without a deposit address can't
+        be funded and an account without an API token can't be used.
+        """
         data = await self._request("POST", "/v1/register")
+
+        api_token = data.get("api_token")
+        deposit_address = data.get("deposit_address")
+
+        if not api_token or not isinstance(api_token, str):
+            raise Level5Error(
+                "Level5 /v1/register response is missing `api_token`. "
+                f"Response keys: {sorted(data.keys())}"
+            )
+        if not deposit_address or not isinstance(deposit_address, str):
+            raise Level5Error(
+                "Level5 /v1/register response is missing `deposit_address`. "
+                f"Response keys: {sorted(data.keys())}"
+            )
+
         account = Level5Account(
-            api_token=data["api_token"],
-            deposit_address=data["deposit_address"],
+            api_token=api_token,
+            deposit_address=deposit_address,
             balance_usdc=float(data.get("balance_usdc", 0.0)),
         )
         self._api_token = account.api_token

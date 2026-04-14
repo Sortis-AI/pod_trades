@@ -19,7 +19,7 @@ from pod_the_trader.data.lot_ledger import LotLedger, migrate_from_trade_ledger
 from pod_the_trader.data.price_log import PriceLog
 from pod_the_trader.data.wallet_log import WalletLog, WalletSnapshot
 from pod_the_trader.level5.auth import Level5Auth
-from pod_the_trader.level5.client import Level5Client
+from pod_the_trader.level5.client import Level5Client, Level5Error
 from pod_the_trader.level5.poller import BalancePoller, FundingOrchestrator
 from pod_the_trader.tools import create_registry
 from pod_the_trader.trading.dex import SOL_MINT, USDC_MINT, JupiterDex
@@ -135,7 +135,18 @@ async def async_main(config_path: str | None = None) -> None:
         # 7. Register with Level5 if new
         if creds and creds.is_new:
             logger.info("Registering with Level5...")
-            account = await level5_client.register()
+            try:
+                account = await level5_client.register()
+            except Level5Error as e:
+                logger.error("Level5 registration failed: %s", e)
+                print(
+                    f"\nLevel5 registration failed: {e}\n\n"
+                    "This usually means the Level5 API returned an "
+                    "incomplete response. Try again in a moment, or "
+                    "contact Level5 support if it persists.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             creds.api_token = account.api_token
             creds.deposit_address = account.deposit_address
             creds.is_new = False
@@ -529,7 +540,18 @@ async def async_main_tui(config_path: str | None = None) -> None:
         base_url=config.get("level5.base_url", "https://api.level5.cloud"),
     ) as level5_client:
         if creds and creds.is_new:
-            account = await level5_client.register()
+            try:
+                account = await level5_client.register()
+            except Level5Error as e:
+                logger.error("Level5 registration failed: %s", e)
+                print(
+                    f"\nLevel5 registration failed: {e}\n\n"
+                    "This usually means the Level5 API returned an "
+                    "incomplete response. Try again in a moment, or "
+                    "contact Level5 support if it persists.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             creds.api_token = account.api_token
             creds.deposit_address = account.deposit_address
             creds.is_new = False
