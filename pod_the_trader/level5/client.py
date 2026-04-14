@@ -23,11 +23,28 @@ def _sanitize_url(url: str) -> str:
 
 @dataclass
 class Level5Account:
-    """Result of Level5 registration."""
+    """Result of Level5 registration.
+
+    Field mapping onto the real ``/v1/register`` response (SKILL v1.7.2):
+
+    * ``api_token``          ← ``api_token``
+    * ``deposit_address``    ← ``instructions.contract_address``
+      (sovereign Solana contract where USDC lands)
+    * ``deposit_code``       ← ``deposit_code``
+      (per-account identifier Level5 uses to route a deposit; the
+      operator provides it through the dashboard when funding)
+    * ``dashboard_url``      ← ``instructions.dashboard_url``
+    * ``status``             ← ``status`` (e.g. ``"pending_deposit"``)
+    * ``balance_usdc``       ← 0 at registration time; the get_balance
+      endpoint is the source of truth thereafter
+    """
 
     api_token: str
     deposit_address: str
     balance_usdc: float
+    deposit_code: str = ""
+    dashboard_url: str = ""
+    status: str = ""
 
 
 class Level5Error(Exception):
@@ -82,38 +99,79 @@ class Level5Client:
     async def register(self) -> Level5Account:
         """Register a new Level5 account.
 
-        Validates both ``api_token`` and ``deposit_address`` in the
-        response. Missing, empty-string, or JSON-null values all raise
-        ``Level5Error`` — a partial response is worse than a clean
-        failure here, because an account without a deposit address can't
-        be funded and an account without an API token can't be used.
+        Parses the real ``/v1/register`` response shape per SKILL v1.7.2:
+
+        .. code-block:: json
+
+            {
+              "api_token": "...",
+              "deposit_code": "A1B2C3D4E5F6A7B8",
+              "status": "pending_deposit",
+              "instructions": {
+                "contract_address": "BBAdcq...",
+                "dashboard_url": "https://level5.cloud/dashboard/<token>"
+              }
+            }
+
+        The sovereign contract address (where USDC actually gets
+        deposited) lives under ``instructions.contract_address``; it's
+        what pod-the-trader has historically called ``deposit_address``.
+        The ``deposit_code`` is a per-account identifier Level5 uses to
+        match a deposit back to the right account.
+
+        Raises ``Level5Error`` with the observed response keys when
+        anything critical is missing, empty, null, or the wrong type.
         """
         data = await self._request("POST", "/v1/register")
 
+        if not isinstance(data, dict):
+            raise Level5Error(
+                f"Level5 /v1/register returned a non-object response: {type(data).__name__}"
+            )
+
         api_token = data.get("api_token")
-        deposit_address = data.get("deposit_address")
+        deposit_code = data.get("deposit_code")
+        status = data.get("status", "") or ""
+        instructions = data.get("instructions") or {}
+        if not isinstance(instructions, dict):
+            instructions = {}
+        contract_address = instructions.get("contract_address")
+        dashboard_url = instructions.get("dashboard_url", "") or ""
+
+        def _observed_shape() -> str:
+            top = sorted(data.keys())
+            nested = sorted(instructions.keys()) if instructions else []
+            return f"top-level keys: {top}; instructions keys: {nested}"
 
         if not api_token or not isinstance(api_token, str):
             raise Level5Error(
-                "Level5 /v1/register response is missing `api_token`. "
-                f"Response keys: {sorted(data.keys())}"
+                f"Level5 /v1/register response is missing `api_token`. {_observed_shape()}"
             )
-        if not deposit_address or not isinstance(deposit_address, str):
+        if not contract_address or not isinstance(contract_address, str):
             raise Level5Error(
-                "Level5 /v1/register response is missing `deposit_address`. "
-                f"Response keys: {sorted(data.keys())}"
+                "Level5 /v1/register response is missing "
+                f"`instructions.contract_address`. {_observed_shape()}"
+            )
+        if not deposit_code or not isinstance(deposit_code, str):
+            raise Level5Error(
+                f"Level5 /v1/register response is missing `deposit_code`. {_observed_shape()}"
             )
 
         account = Level5Account(
             api_token=api_token,
-            deposit_address=deposit_address,
+            deposit_address=contract_address,
+            deposit_code=deposit_code,
+            dashboard_url=dashboard_url,
+            status=status,
             balance_usdc=float(data.get("balance_usdc", 0.0)),
         )
         self._api_token = account.api_token
         self._deposit_address = account.deposit_address
         logger.info(
-            "Registered with Level5. Deposit address: %s",
+            "Registered with Level5. Contract: %s  deposit_code: %s  status: %s",
             account.deposit_address,
+            account.deposit_code,
+            account.status or "(none)",
         )
         return account
 

@@ -25,98 +25,115 @@ async def client():
 
 
 class TestRegister:
+    """Tests for the /v1/register response shape described in Level5
+    SKILL v1.7.2:
+
+        {
+          "api_token": "...",
+          "deposit_code": "A1B2C3D4E5F6A7B8",
+          "status": "pending_deposit",
+          "instructions": {
+            "contract_address": "BBAdcq...",
+            "dashboard_url": "https://level5.cloud/dashboard/<token>"
+          }
+        }
+    """
+
+    @staticmethod
+    def _good_response() -> dict:
+        return {
+            "api_token": "new_token_xyz",
+            "deposit_code": "A1B2C3D4E5F6A7B8",
+            "status": "pending_deposit",
+            "instructions": {
+                "contract_address": "BBAdcqUkg68JXNiPQ1HR1wujfZuayyK3eQTQSYAh6FSW",
+                "dashboard_url": "https://level5.cloud/dashboard/new_token_xyz",
+            },
+        }
+
     @respx.mock
     async def test_register_success(self) -> None:
         respx.post(f"{BASE_URL}/v1/register").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "api_token": "new_token_xyz",
-                    "deposit_address": "NewDepAddr",
-                    "balance_usdc": 0.0,
-                },
-            )
+            return_value=httpx.Response(200, json=self._good_response())
         )
         async with Level5Client(base_url=BASE_URL) as client:
             account = await client.register()
         assert account.api_token == "new_token_xyz"
-        assert account.deposit_address == "NewDepAddr"
+        # deposit_address is the sovereign contract (instructions.contract_address)
+        assert account.deposit_address == "BBAdcqUkg68JXNiPQ1HR1wujfZuayyK3eQTQSYAh6FSW"
+        assert account.deposit_code == "A1B2C3D4E5F6A7B8"
+        assert account.status == "pending_deposit"
+        assert account.dashboard_url == "https://level5.cloud/dashboard/new_token_xyz"
         assert account.balance_usdc == 0.0
 
     @respx.mock
-    async def test_register_missing_deposit_address_raises_level5_error(self) -> None:
-        """Regression test: Level5's /v1/register response has been seen in
-        production without a ``deposit_address`` key. The original code did
-        ``data["deposit_address"]`` and crashed the whole startup flow with
-        an unhandled ``KeyError``. The client must detect the missing field
-        and raise a ``Level5Error`` with a clear message instead.
+    async def test_register_missing_contract_address_raises_level5_error(
+        self,
+    ) -> None:
+        """Regression test for the exact crash a user hit during first-run
+        registration: the response has ``instructions`` but no
+        ``contract_address`` inside it. The client must surface a clean
+        ``Level5Error`` instead of a bare ``KeyError``.
         """
-        respx.post(f"{BASE_URL}/v1/register").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "api_token": "new_token_xyz",
-                    # deposit_address intentionally absent
-                    "balance_usdc": 0.0,
-                },
-            )
-        )
+        body = self._good_response()
+        body["instructions"].pop("contract_address")
+        respx.post(f"{BASE_URL}/v1/register").mock(return_value=httpx.Response(200, json=body))
         async with Level5Client(base_url=BASE_URL) as client:
             with pytest.raises(Level5Error) as exc:
                 await client.register()
-        msg = str(exc.value).lower()
-        assert "deposit_address" in msg or "deposit address" in msg
+        assert "contract_address" in str(exc.value)
+
+    @respx.mock
+    async def test_register_missing_instructions_object_raises_level5_error(
+        self,
+    ) -> None:
+        """Whole ``instructions`` object missing — also reported in the wild.
+        The user's actual error was:
+            Response keys: ['api_token', 'deposit_code', 'instructions', 'status']
+        so this covers the inverse case where the object is entirely absent.
+        """
+        body = self._good_response()
+        body.pop("instructions")
+        respx.post(f"{BASE_URL}/v1/register").mock(return_value=httpx.Response(200, json=body))
+        async with Level5Client(base_url=BASE_URL) as client:
+            with pytest.raises(Level5Error) as exc:
+                await client.register()
+        assert "contract_address" in str(exc.value)
+
+    @respx.mock
+    async def test_register_missing_deposit_code_raises_level5_error(self) -> None:
+        body = self._good_response()
+        body.pop("deposit_code")
+        respx.post(f"{BASE_URL}/v1/register").mock(return_value=httpx.Response(200, json=body))
+        async with Level5Client(base_url=BASE_URL) as client:
+            with pytest.raises(Level5Error) as exc:
+                await client.register()
+        assert "deposit_code" in str(exc.value)
 
     @respx.mock
     async def test_register_missing_api_token_raises_level5_error(self) -> None:
-        """Symmetric case: no api_token in the response."""
-        respx.post(f"{BASE_URL}/v1/register").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "deposit_address": "NewDepAddr",
-                    "balance_usdc": 0.0,
-                },
-            )
-        )
+        body = self._good_response()
+        body.pop("api_token")
+        respx.post(f"{BASE_URL}/v1/register").mock(return_value=httpx.Response(200, json=body))
         async with Level5Client(base_url=BASE_URL) as client:
             with pytest.raises(Level5Error) as exc:
                 await client.register()
-        assert "api_token" in str(exc.value).lower()
+        assert "api_token" in str(exc.value)
 
     @respx.mock
-    async def test_register_empty_deposit_address_raises_level5_error(self) -> None:
-        """Empty string is as unusable as missing — the wallet can't be
-        funded without a real deposit address, so the whole flow should
-        halt with a clear error.
-        """
-        respx.post(f"{BASE_URL}/v1/register").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "api_token": "new_token_xyz",
-                    "deposit_address": "",
-                    "balance_usdc": 0.0,
-                },
-            )
-        )
+    async def test_register_empty_contract_address_raises_level5_error(self) -> None:
+        body = self._good_response()
+        body["instructions"]["contract_address"] = ""
+        respx.post(f"{BASE_URL}/v1/register").mock(return_value=httpx.Response(200, json=body))
         async with Level5Client(base_url=BASE_URL) as client:
             with pytest.raises(Level5Error):
                 await client.register()
 
     @respx.mock
-    async def test_register_null_deposit_address_raises_level5_error(self) -> None:
-        """JSON null → Python None. Same treatment as missing/empty."""
-        respx.post(f"{BASE_URL}/v1/register").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "api_token": "new_token_xyz",
-                    "deposit_address": None,
-                    "balance_usdc": 0.0,
-                },
-            )
-        )
+    async def test_register_null_contract_address_raises_level5_error(self) -> None:
+        body = self._good_response()
+        body["instructions"]["contract_address"] = None
+        respx.post(f"{BASE_URL}/v1/register").mock(return_value=httpx.Response(200, json=body))
         async with Level5Client(base_url=BASE_URL) as client:
             with pytest.raises(Level5Error):
                 await client.register()
@@ -255,13 +272,18 @@ class TestRetry:
                 200,
                 json={
                     "api_token": "tok",
-                    "deposit_address": "addr",
-                    "balance_usdc": 0,
+                    "deposit_code": "CODE123",
+                    "status": "pending_deposit",
+                    "instructions": {
+                        "contract_address": "ContractAddr",
+                        "dashboard_url": "https://level5.cloud/dashboard/tok",
+                    },
                 },
             ),
         ]
         account = await client.register()
         assert account.api_token == "tok"
+        assert account.deposit_address == "ContractAddr"
         assert route.call_count == 2
 
     @respx.mock

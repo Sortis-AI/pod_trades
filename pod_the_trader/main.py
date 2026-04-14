@@ -149,10 +149,20 @@ async def async_main(config_path: str | None = None) -> None:
                 sys.exit(1)
             creds.api_token = account.api_token
             creds.deposit_address = account.deposit_address
+            creds.deposit_code = account.deposit_code
+            creds.dashboard_url = account.dashboard_url or level5_client.get_dashboard_url()
             creds.is_new = False
             level5_auth.save(creds)
             deposit_address = account.deposit_address
-            print(f"\nDashboard: {level5_client.get_dashboard_url()}")
+            print()
+            print("Level5 account registered.")
+            print(f"  Dashboard:    {creds.dashboard_url}")
+            print(f"  Contract:     {account.deposit_address}")
+            print(f"  Deposit code: {account.deposit_code}")
+            print(f"  Status:       {account.status or 'pending_deposit'}")
+            print()
+            print("Fund the account via the dashboard above — the deposit")
+            print("code is how Level5 routes your deposit to this account.")
 
             # 8. Wait for funding and auto-deposit
             poller = BalancePoller(
@@ -554,6 +564,8 @@ async def async_main_tui(config_path: str | None = None) -> None:
                 sys.exit(1)
             creds.api_token = account.api_token
             creds.deposit_address = account.deposit_address
+            creds.deposit_code = account.deposit_code
+            creds.dashboard_url = account.dashboard_url or level5_client.get_dashboard_url()
             creds.is_new = False
             level5_auth.save(creds)
 

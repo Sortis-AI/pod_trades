@@ -11,10 +11,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Level5Credentials:
-    """Stored Level5 authentication state."""
+    """Stored Level5 authentication state.
+
+    ``deposit_address`` is the sovereign contract address where USDC
+    lands; ``deposit_code`` is the per-account identifier the operator
+    uses to route a deposit to the right account (provided by Level5's
+    /v1/register response under ``instructions.contract_address`` and
+    ``deposit_code`` respectively). ``dashboard_url`` is stored so the
+    TUI can link to it even after the initial setup flow finishes.
+    """
 
     api_token: str
     deposit_address: str | None = None
+    deposit_code: str | None = None
+    dashboard_url: str | None = None
     is_new: bool = False
 
 
@@ -33,12 +43,25 @@ class Level5Auth:
         logger.debug("Saved Level5 credentials to %s", self._creds_path)
 
     def load(self) -> Level5Credentials | None:
-        """Load credentials from disk. Returns None if not found."""
+        """Load credentials from disk. Returns None if not found.
+
+        Tolerant of older credential files that predate the
+        ``deposit_code`` / ``dashboard_url`` fields: unknown keys are
+        dropped and missing keys fall back to their dataclass defaults.
+        """
         if not self._creds_path.is_file():
             return None
         try:
             data = json.loads(self._creds_path.read_text())
-            return Level5Credentials(**data)
+            known = {
+                "api_token",
+                "deposit_address",
+                "deposit_code",
+                "dashboard_url",
+                "is_new",
+            }
+            filtered = {k: v for k, v in data.items() if k in known}
+            return Level5Credentials(**filtered)
         except Exception as e:
             logger.warning("Failed to load Level5 credentials: %s", e)
             return None
