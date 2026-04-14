@@ -76,6 +76,48 @@ def _configure_logging(config: Config) -> None:
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
 
 
+def _print_post_registration_instructions(
+    *,
+    dashboard_url: str,
+    contract: str,
+    deposit_code: str,
+    status: str,
+    wallet_address: str,
+) -> None:
+    """Print the operator instructions immediately after a successful
+    Level5 registration. Must be called in both CLI and TUI paths so
+    the operator knows what to do next regardless of mode.
+
+    pod-the-trader has no programmatic Level5 deposit path per SKILL
+    v1.7.2 — the operator funds USDC through the dashboard, and the
+    bot separately needs SOL in the trading wallet for Jupiter gas.
+    Both actions are called out explicitly.
+    """
+    bar = "─" * 72
+    print()
+    print(bar)
+    print("  Level5 account registered.")
+    print()
+    print(f"    Dashboard:     {dashboard_url}")
+    print(f"    Contract:      {contract}")
+    print(f"    Deposit code:  {deposit_code}")
+    print(f"    Status:        {status or 'pending_deposit'}")
+    print()
+    print("  Next steps:")
+    print()
+    print("    1. Open the dashboard and deposit USDC. Level5 routes")
+    print("       the deposit to this account via the deposit code.")
+    print()
+    print("    2. Send SOL to your trading wallet (for Jupiter gas):")
+    print()
+    print(f"         {wallet_address}")
+    print()
+    print("  pod-the-trader will begin trading once both the Level5")
+    print("  account and the trading wallet have funds.")
+    print(bar)
+    print(flush=True)
+
+
 async def async_main(config_path: str | None = None) -> None:
     """Main async entry point."""
     load_dotenv()
@@ -154,37 +196,42 @@ async def async_main(config_path: str | None = None) -> None:
             creds.is_new = False
             level5_auth.save(creds)
             deposit_address = account.deposit_address
-            print()
-            print("Level5 account registered.")
-            print(f"  Dashboard:    {creds.dashboard_url}")
-            print(f"  Contract:     {account.deposit_address}")
-            print(f"  Deposit code: {account.deposit_code}")
-            print(f"  Status:       {account.status or 'pending_deposit'}")
-            print()
-            print("Fund the account via the dashboard above — the deposit")
-            print("code is how Level5 routes your deposit to this account.")
+            _print_post_registration_instructions(
+                dashboard_url=creds.dashboard_url,
+                contract=account.deposit_address,
+                deposit_code=account.deposit_code,
+                status=account.status,
+                wallet_address=wallet_address,
+            )
 
-            # 8. Wait for funding and auto-deposit
             poller = BalancePoller(
                 rpc_url=rpc_url,
                 wallet_address=wallet_address,
                 interval=config.get("polling.funding_interval_seconds", 10),
                 timeout=config.get("polling.funding_timeout_seconds", 3600),
             )
-            orchestrator = FundingOrchestrator(poller, level5_client, tx_builder)
+            orchestrator = FundingOrchestrator(poller, level5_client)
 
-            print(f"\nDeposit SOL to your wallet: {wallet_address}")
-            print("Waiting for funding...")
+            min_level5_usdc = float(config.get("level5.min_balance_threshold_usdc", 0.1) or 0.0)
+            min_wallet_sol = float(config.get("polling.min_wallet_sol", 0.05) or 0.05)
 
             try:
-                await orchestrator.wait_and_deposit(
-                    keypair=keypair,
-                    deposit_address=deposit_address,
-                    deposit_amount_sol=0.1,
-                    funding_threshold_sol=0.15,
+                print(
+                    f"\n  Waiting for Level5 funding via dashboard "
+                    f"(min ${min_level5_usdc:.2f} USDC)..."
                 )
+                await orchestrator.wait_for_level5_funding(min_level5_usdc)
+                print("  Level5 account is funded.")
+
+                print(
+                    f"\n  Waiting for trading wallet to hold at least "
+                    f"{min_wallet_sol:.4f} SOL for Jupiter gas..."
+                )
+                await orchestrator.wait_for_trading_wallet(min_wallet_sol)
+                print("  Trading wallet ready.")
             except TimeoutError as e:
                 logger.error("Funding timed out: %s", e)
+                print(f"\nFunding timed out: {e}", file=sys.stderr)
                 sys.exit(1)
 
         logger.info("Dashboard: %s", level5_client.get_dashboard_url())
@@ -568,6 +615,42 @@ async def async_main_tui(config_path: str | None = None) -> None:
             creds.dashboard_url = account.dashboard_url or level5_client.get_dashboard_url()
             creds.is_new = False
             level5_auth.save(creds)
+
+            _print_post_registration_instructions(
+                dashboard_url=creds.dashboard_url,
+                contract=account.deposit_address,
+                deposit_code=account.deposit_code,
+                status=account.status,
+                wallet_address=wallet_address,
+            )
+
+            poller = BalancePoller(
+                rpc_url=rpc_url,
+                wallet_address=wallet_address,
+                interval=config.get("polling.funding_interval_seconds", 10),
+                timeout=config.get("polling.funding_timeout_seconds", 3600),
+            )
+            orchestrator = FundingOrchestrator(poller, level5_client)
+            min_level5_usdc = float(config.get("level5.min_balance_threshold_usdc", 0.1) or 0.0)
+            min_wallet_sol = float(config.get("polling.min_wallet_sol", 0.05) or 0.05)
+            try:
+                print(
+                    f"\n  Waiting for Level5 funding via dashboard "
+                    f"(min ${min_level5_usdc:.2f} USDC)..."
+                )
+                await orchestrator.wait_for_level5_funding(min_level5_usdc)
+                print("  Level5 account is funded.")
+
+                print(
+                    f"\n  Waiting for trading wallet to hold at least "
+                    f"{min_wallet_sol:.4f} SOL for Jupiter gas..."
+                )
+                await orchestrator.wait_for_trading_wallet(min_wallet_sol)
+                print("  Trading wallet ready.")
+            except TimeoutError as e:
+                logger.error("Funding timed out: %s", e)
+                print(f"\nFunding timed out: {e}", file=sys.stderr)
+                sys.exit(1)
 
         async with JupiterDex(
             quote_url=config.get("jupiter.quote_url"),

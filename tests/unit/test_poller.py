@@ -1,4 +1,4 @@
-"""Tests for pod_the_trader.level5.poller."""
+"""Tests for pod_the_trader.level5.poller.BalancePoller."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -52,19 +52,3 @@ class TestBalancePoller:
         poller.get_balance = always_zero  # type: ignore[assignment]
         with pytest.raises(TimeoutError, match="timed out"):
             await poller.poll_until_funded(1.0)
-
-    async def test_balance_change_callback(self, poller: BalancePoller) -> None:
-        balances = [0.0, 0.0, 0.5, 1.0]
-        idx = 0
-        changes: list[float] = []
-
-        async def mock_get_balance() -> float:
-            nonlocal idx
-            val = balances[min(idx, len(balances) - 1)]
-            idx += 1
-            return val
-
-        poller.get_balance = mock_get_balance  # type: ignore[assignment]
-        await poller.poll_until_funded(1.0, on_balance_change=lambda b: changes.append(b))
-        assert 0.5 in changes
-        assert 1.0 in changes

@@ -31,6 +31,10 @@ polling:
   funding_interval_seconds: 10
   funding_timeout_seconds: 3600
   balance_monitor_interval_seconds: 30
+  # Minimum SOL the trading wallet must hold before the bot starts
+  # trading. Needed to cover Jupiter swap gas — ~0.000005 SOL per tx
+  # plus rent for any new associated token accounts.
+  min_wallet_sol: 0.05
 
 logging:
   level: "INFO"

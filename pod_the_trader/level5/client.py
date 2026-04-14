@@ -78,6 +78,10 @@ class Level5Client:
         # USD, populated on every successful get_balance() call.
         self._last_usdc_only: float = 0.0
         self._last_credit_only: float = 0.0
+        # ``is_active`` from the balance endpoint — flips to True once the
+        # first deposit has been credited or the account has locked SQUIRE.
+        # Used by the startup funding wait to decide when to proceed.
+        self._last_is_active: bool = False
 
     async def __aenter__(self) -> "Level5Client":
         self._http = httpx.AsyncClient(
@@ -176,7 +180,14 @@ class Level5Client:
         return account
 
     async def get_balance(self) -> float:
-        """Get current USDC balance via the dedicated balance endpoint."""
+        """Get current USDC balance via the dedicated balance endpoint.
+
+        Also captures the ``is_active`` flag into
+        :attr:`last_is_active`. The flag flips to True once Level5 has
+        credited the account (first deposit or first SQUIRE lock), and
+        pod-the-trader's startup funding wait uses it as the signal to
+        stop polling and start trading.
+        """
         url = f"{self._base_url}/proxy/{self._api_token}/balance"
         try:
             response = await self._client.get(url)
@@ -187,6 +198,7 @@ class Level5Client:
             credit = int(data.get("credit_balance", 0))
             self._last_usdc_only = usdc / _USDC_DECIMALS
             self._last_credit_only = credit / _USDC_DECIMALS
+            self._last_is_active = bool(data.get("is_active", False))
             balance = (usdc + credit) / _USDC_DECIMALS
             self._last_balance_usdc = balance
             return balance
@@ -251,6 +263,15 @@ class Level5Client:
     def last_credit_balance(self) -> float:
         """Promotional credit portion of the last balance check."""
         return self._last_credit_only
+
+    @property
+    def last_is_active(self) -> bool:
+        """``is_active`` flag from the last balance check.
+
+        True once the account has been activated by a first deposit or
+        SQUIRE lock. False before any funding lands.
+        """
+        return self._last_is_active
 
     def _parse_balance_header(self, response: httpx.Response) -> float:
         """Parse X-Balance-Remaining from a response."""
