@@ -116,9 +116,23 @@ class Portfolio:
         self._history_path = self._storage_dir / "trade_history.json"
 
     async def get_sol_balance(self, address: str) -> float:
-        """Get real SOL balance from RPC."""
+        """Get real SOL balance from RPC.
+
+        Propagates RPC failures — a fake zero would corrupt agent
+        decisions. Logs with the exception type because some wrappers
+        (SolanaRpcException) render as an empty string under str().
+        """
         async with AsyncClient(self._rpc_url) as client:
-            resp = await client.get_balance(Pubkey.from_string(address))
+            try:
+                resp = await client.get_balance(Pubkey.from_string(address))
+            except Exception as e:
+                logger.warning(
+                    "get_sol_balance RPC failure for %s: %s: %r",
+                    address[:8],
+                    type(e).__name__,
+                    e,
+                )
+                raise
             return resp.value / LAMPORTS_PER_SOL
 
     async def get_token_balance(self, owner_address: str, mint_address: str) -> float:

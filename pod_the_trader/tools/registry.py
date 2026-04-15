@@ -77,8 +77,12 @@ class ToolRegistry:
             result = await tool.handler(args)
             return json.dumps(result)
         except Exception as e:
-            logger.error("Tool '%s' failed: %s", name, e)
-            return json.dumps({"error": f"Tool execution failed: {e}"})
+            # Some exceptions (notably solana.rpc.core.SolanaRpcException)
+            # render as an empty string under str(), so always log the
+            # type and repr so the operator can see what actually failed.
+            detail = f"{type(e).__name__}: {e!r}"
+            logger.error("Tool '%s' failed: %s", name, detail)
+            return json.dumps({"error": f"Tool execution failed: {detail}"})
 
     @property
     def tool_names(self) -> list[str]:
