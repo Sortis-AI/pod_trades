@@ -31,7 +31,7 @@ from pod_the_trader.wallet.setup import WalletSetup
 logger = logging.getLogger("pod_the_trader")
 
 
-def _configure_logging(config: Config) -> None:
+def _configure_logging(config: Config, *, console: bool = True) -> None:
     """Set up logging with split file (verbose) + console (minimal) handlers.
 
     File gets everything at DEBUG with full format — that's the forensic
@@ -41,6 +41,10 @@ def _configure_logging(config: Config) -> None:
     visible, everything else stays out of the user's face. Noisy libraries
     (httpx, httpcore, openai) are pinned to WARNING so their INFO-level
     request logs don't spam the console.
+
+    Pass ``console=False`` when launching the TUI: Textual owns the screen
+    and any stray writes to stderr paint over the dashboard. The TUI wires
+    its own LogTailHandler for in-app log display.
 
     User-facing cycle summaries and trade events are printed directly to
     stdout via `print()`, not through the logger.
@@ -59,11 +63,12 @@ def _configure_logging(config: Config) -> None:
     file_handler.setFormatter(logging.Formatter(log_format))
     root_logger.addHandler(file_handler)
 
-    # Console handler (stderr) — minimal, WARNING+, simple format
-    console = logging.StreamHandler(sys.stderr)
-    console.setLevel(logging.WARNING)
-    console.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
-    root_logger.addHandler(console)
+    if console:
+        # Console handler (stderr) — minimal, WARNING+, simple format
+        console_handler = logging.StreamHandler(sys.stderr)
+        console_handler.setLevel(logging.WARNING)
+        console_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        root_logger.addHandler(console_handler)
 
     # Silence noisy third-party libs at the console level (they still log
     # to the file at DEBUG via their own loggers → root → file_handler).
@@ -569,7 +574,7 @@ async def async_main_tui(config_path: str | None = None) -> None:
         print(f"Configuration error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    _configure_logging(config)
+    _configure_logging(config, console=False)
     logger.info("Pod The Trader (TUI) starting up...")
 
     storage_dir = config.get("storage.base_dir", "~/.pod_the_trader")
