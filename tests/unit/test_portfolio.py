@@ -240,6 +240,62 @@ class TestGetTokenBalance:
         debug_messages = [r.message for r in caplog.records if r.levelname == "DEBUG"]
         assert any("Path 1" in m for m in debug_messages)
 
+    async def test_bare_solana_rpc_exception_on_missing_ata_is_silent(
+        self, portfolio: Portfolio, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Production regression: some providers wrap the "account not
+        found" RPC error as a bare ``SolanaRpcException()`` whose
+        ``str()`` / ``repr()`` produce ``SolanaRpcException()`` with no
+        message text — defeating any phrase-based filter. The fix is to
+        probe with ``get_account_info`` first: ``value is None`` for
+        missing ATAs is deterministic and exception-free. This test
+        locks in that the Path 2 get_account_info lookahead is actually
+        being used and produces silent zero for this case.
+        """
+
+        class SolanaRpcException(Exception):  # noqa: N818 — mimic real class name
+            """Stand-in for solana.rpc.core.SolanaRpcException with
+            the exact renderer behavior that broke the filter in
+            production: empty str() / repr()."""
+
+            def __repr__(self) -> str:
+                return "SolanaRpcException()"
+
+            def __str__(self) -> str:
+                return ""
+
+        # get_account_info returns value=None → short-circuit, never
+        # calls get_token_account_balance at all.
+        info_resp = MagicMock()
+        info_resp.value = None
+
+        empty_resp = MagicMock()
+        empty_resp.value = []
+
+        mock_client = AsyncMock()
+        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(return_value=empty_resp)
+        mock_client.get_account_info = AsyncMock(return_value=info_resp)
+        # If Path 2 ever reaches this, the bare SolanaRpcException
+        # would break phrase-based filters — the get_account_info
+        # lookahead must prevent us from getting here.
+        mock_client.get_token_account_balance = AsyncMock(side_effect=SolanaRpcException())
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch("pod_the_trader.trading.portfolio.AsyncClient", return_value=mock_client),
+            caplog.at_level("DEBUG", logger="pod_the_trader.trading.portfolio"),
+        ):
+            balance = await portfolio.get_token_balance(
+                "11111111111111111111111111111111", TEST_MINT
+            )
+
+        assert balance == 0.0
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert not warnings, f"Expected no WARNINGs, got: {[r.message for r in warnings]}"
+        # And we should indeed have skipped the balance call.
+        mock_client.get_token_account_balance.assert_not_called()
+
     async def test_real_rpc_failure_still_warns(
         self, portfolio: Portfolio, caplog: pytest.LogCaptureFixture
     ) -> None:

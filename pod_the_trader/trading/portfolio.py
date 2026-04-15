@@ -37,8 +37,29 @@ def _is_account_not_found(e: Exception) -> bool:
     the queried program) and ``getTokenAccountBalance`` (when the ATA
     derived address has never been created). Both are silent-zero
     conditions, not errors worth surfacing to the operator.
+
+    Some wrappers (notably ``solana.rpc.core.SolanaRpcException``)
+    render as a bare ``ClassName()`` under ``str()``/``repr()`` but
+    stash the real message on ``__cause__`` / ``parent_exception`` /
+    ``error_msg`` / ``args``. We walk all of those so the filter
+    matches regardless of how the wrapper formatted itself.
     """
-    haystack = f"{e!s} {e!r}".lower()
+    parts: list[str] = [f"{e!s}", f"{e!r}"]
+
+    cause = getattr(e, "__cause__", None)
+    if cause is not None and cause is not e:
+        parts.append(f"{cause!s}")
+        parts.append(f"{cause!r}")
+
+    for attr in ("error_msg", "parent_exception", "message"):
+        val = getattr(e, attr, None)
+        if val is not None:
+            parts.append(str(val))
+
+    for arg in getattr(e, "args", ()) or ():
+        parts.append(str(arg))
+
+    haystack = " ".join(parts).lower()
     return any(phrase in haystack for phrase in _NOT_FOUND_PHRASES)
 
 
@@ -167,12 +188,25 @@ class Portfolio:
                 return sum(seen.values())
 
             # ---- Path 2: ATA fallback for both programs ----
+            #
+            # Probe the ATA with ``get_account_info`` first. That call
+            # returns ``value=None`` deterministically for addresses
+            # that have never been created on-chain — no exception-
+            # text guessing required. Only when the account actually
+            # exists do we follow up with ``get_token_account_balance``.
+            # This is the fix for a production regression where some
+            # RPC providers wrap the not-found error as a bare
+            # ``SolanaRpcException()`` whose str() / repr() carry no
+            # message at all, defeating any phrase-based filter.
             for program_id in (TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID):
                 try:
                     ata, _ = Pubkey.find_program_address(
                         [bytes(owner), bytes(program_id), bytes(mint)],
                         ASSOCIATED_TOKEN_PROGRAM_ID,
                     )
+                    info_resp = await client.get_account_info(ata)
+                    if info_resp.value is None:
+                        continue  # ATA has never been created — silent zero
                     bal = await client.get_token_account_balance(ata)
                     if bal.value is not None and bal.value.ui_amount is not None:
                         seen[str(ata)] = float(bal.value.ui_amount)
