@@ -350,8 +350,16 @@ async def async_main(config_path: str | None = None) -> None:
 
                     os._exit(130)
 
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, _signal_handler)
+            # Windows asyncio (ProactorEventLoop) doesn't implement
+            # add_signal_handler, and SIGTERM isn't a real deliverable
+            # signal on Windows either. Fall back to signal.signal for
+            # Ctrl+C there — it's the only thing the Windows console
+            # can actually raise into a Python process.
+            if sys.platform == "win32":
+                signal.signal(signal.SIGINT, lambda *_: _signal_handler())
+            else:
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    loop.add_signal_handler(sig, _signal_handler)
 
             # 16. Run
             logger.info(
