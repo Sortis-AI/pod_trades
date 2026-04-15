@@ -17,6 +17,30 @@ TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5
 TOKEN_2022_PROGRAM_ID = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
 ASSOCIATED_TOKEN_PROGRAM_ID = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 
+# Phrases that identify "this address has no account" RPC responses.
+# The Solana RPC and solders/solana-py wrappers phrase this several
+# different ways depending on which code path surfaced the error and
+# whether str() or repr() is used to render it; check all of them.
+_NOT_FOUND_PHRASES = (
+    "could not find account",
+    "account not found",
+    "accountnotfound",
+    "invalid param: could not find account",
+)
+
+
+def _is_account_not_found(e: Exception) -> bool:
+    """True when an RPC error means "this address has no on-chain account".
+
+    A fresh wallet that has never held a token raises this from both
+    ``getTokenAccountsByOwner`` (when the owner has no account under
+    the queried program) and ``getTokenAccountBalance`` (when the ATA
+    derived address has never been created). Both are silent-zero
+    conditions, not errors worth surfacing to the operator.
+    """
+    haystack = f"{e!s} {e!r}".lower()
+    return any(phrase in haystack for phrase in _NOT_FOUND_PHRASES)
+
 
 @dataclass
 class TradeRecord:
@@ -91,8 +115,10 @@ class Portfolio:
            ``getTokenAccountsByOwner`` call fails (some RPC providers
            rate-limit or return empty bodies on it).
 
-        If all paths fail, logs a WARNING (not DEBUG) so the operator can
-        see the real exception type and message instead of a silent zero.
+        Errors that say "could not find account" are the expected state
+        for a wallet that has never held the token — they are silently
+        treated as zero. Any other failure still WARNs so operators can
+        act on real RPC problems.
         """
         from solana.rpc.types import TokenAccountOpts
 
@@ -120,6 +146,8 @@ class Portfolio:
                         if ui_amount is not None:
                             seen[pubkey] = float(ui_amount)
                 except Exception as e:
+                    if _is_account_not_found(e):
+                        continue
                     errors.append(
                         f"getTokenAccountsByOwner({str(program_id)[:12]}): "
                         f"{type(e).__name__}: {e!r}"
@@ -139,6 +167,8 @@ class Portfolio:
                     if bal.value is not None and bal.value.ui_amount is not None:
                         seen[str(ata)] = float(bal.value.ui_amount)
                 except Exception as e:
+                    if _is_account_not_found(e):
+                        continue
                     errors.append(
                         f"getTokenAccountBalance(ATA, {str(program_id)[:12]}): "
                         f"{type(e).__name__}: {e!r}"
@@ -147,19 +177,10 @@ class Portfolio:
         if seen:
             return sum(seen.values())
 
-        # If every RPC path failed with "could not find account", the wallet
-        # has simply never held this token — the ATA was never created.
-        # That's the normal zero-balance case on a fresh wallet, not an
-        # error worth scaring the operator with. Log at DEBUG and return 0.
-        # Any other error category (timeouts, rate limits, unexpected RPC
-        # faults) still WARNs so real problems surface.
-        if errors and all("could not find account" in e.lower() for e in errors):
-            logger.debug(
-                "Token balance for %s on wallet %s is zero (ATA does not exist yet)",
-                mint_address[:8],
-                owner_address[:8],
-            )
-        elif errors:
+        # If nothing raised a real error, every path just returned "no
+        # such account" — the normal zero-balance state for a wallet
+        # that has never held this token. Silent zero is correct here.
+        if errors:
             logger.warning(
                 "Could not read token balance for %s on wallet %s. All RPC paths failed: %s",
                 mint_address[:8],

@@ -9,6 +9,7 @@ from pod_the_trader.trading.dex import JupiterDex
 from pod_the_trader.trading.portfolio import (
     Portfolio,
     TradeRecord,
+    _is_account_not_found,
 )
 
 SOL_MINT = "So11111111111111111111111111111111111111112"
@@ -63,6 +64,39 @@ def _make_mock_token_account(pubkey: str, ui_amount: float) -> MagicMock:
     return acc
 
 
+class TestIsAccountNotFound:
+    """Direct tests for the "benign not-found" detector.
+
+    The production RPC error from a fresh wallet surfaces through
+    multiple wrappers — ``solana.rpc.core.RPCException`` wrapping a
+    solders ``InvalidParamsMessage``, sometimes rendered via str() and
+    sometimes via repr(). The detector must match all rendering paths.
+    """
+
+    def test_plain_str_message(self) -> None:
+        assert _is_account_not_found(Exception("Invalid param: could not find account"))
+
+    def test_repr_style_nested(self) -> None:
+        # This mirrors the exact shape that showed up in the user's TUI.
+        e = Exception(
+            'RPCException(InvalidParamsMessage { message: "Invalid param: '
+            'could not find account", })'
+        )
+        assert _is_account_not_found(e)
+
+    def test_alternate_phrasings(self) -> None:
+        assert _is_account_not_found(Exception("account not found"))
+        assert _is_account_not_found(Exception("AccountNotFound"))
+
+    def test_case_insensitive(self) -> None:
+        assert _is_account_not_found(Exception("COULD NOT FIND ACCOUNT"))
+
+    def test_unrelated_errors_not_matched(self) -> None:
+        assert not _is_account_not_found(Exception("connection reset by peer"))
+        assert not _is_account_not_found(Exception("429 too many requests"))
+        assert not _is_account_not_found(Exception("RPC node timeout"))
+
+
 class TestGetTokenBalance:
     async def test_returns_balance(self, portfolio: Portfolio) -> None:
         acc = _make_mock_token_account("TokenAcctABC", 1000.5)
@@ -102,6 +136,36 @@ class TestGetTokenBalance:
             )
 
         assert balance == 0.0
+
+    async def test_fresh_wallet_by_owner_not_found_is_silent(
+        self, portfolio: Portfolio, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Fresh wallet: both by-owner AND ATA lookups raise "could not
+        find account" — this is the user's exact production scenario.
+        Must NOT surface any WARNING regardless of which path the error
+        surfaced on.
+        """
+        not_found_err = Exception(
+            'RPCException(InvalidParamsMessage { message: "Invalid param: '
+            'could not find account" })'
+        )
+        mock_client = AsyncMock()
+        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(side_effect=not_found_err)
+        mock_client.get_token_account_balance = AsyncMock(side_effect=not_found_err)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch("pod_the_trader.trading.portfolio.AsyncClient", return_value=mock_client),
+            caplog.at_level("DEBUG", logger="pod_the_trader.trading.portfolio"),
+        ):
+            balance = await portfolio.get_token_balance(
+                "11111111111111111111111111111111", TEST_MINT
+            )
+
+        assert balance == 0.0
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert not warnings, f"Expected no WARNINGs, got: {[r.message for r in warnings]}"
 
     async def test_fresh_wallet_ata_not_found_is_silent(
         self, portfolio: Portfolio, caplog: pytest.LogCaptureFixture
