@@ -1,6 +1,7 @@
 """Tests for pod_the_trader.level5.auth."""
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,10 @@ class TestCredentialPersistence:
     def test_load_returns_none_when_no_file(self, auth: Level5Auth) -> None:
         assert auth.load() is None
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX mode bits are not enforceable on NTFS; Windows uses icacls instead",
+    )
     def test_save_sets_file_permissions(self, auth: Level5Auth) -> None:
         creds = Level5Credentials(api_token="tok")
         auth.save(creds)

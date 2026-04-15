@@ -2,12 +2,13 @@
 
 import json
 import logging
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import base58
 from solders.keypair import Keypair
+
+from pod_the_trader.util.fs import restrict_to_owner
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ class WalletManager:
         self._storage_dir.mkdir(parents=True, exist_ok=True)
         raw = list(bytes(keypair))
         self._keypair_path.write_text(json.dumps(raw))
-        os.chmod(self._keypair_path, 0o600)
+        restrict_to_owner(self._keypair_path)
         logger.debug("Saved keypair to %s", self._keypair_path)
 
     def import_key(self, key_string: str) -> WalletInfo:

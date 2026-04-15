@@ -6,6 +6,8 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from pod_the_trader.util.fs import restrict_to_owner
+
 logger = logging.getLogger(__name__)
 
 
@@ -39,7 +41,7 @@ class Level5Auth:
         """Write credentials to disk with restricted permissions."""
         self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._creds_path.write_text(json.dumps(asdict(creds)))
-        os.chmod(self._creds_path, 0o600)
+        restrict_to_owner(self._creds_path)
         logger.debug("Saved Level5 credentials to %s", self._creds_path)
 
     def load(self) -> Level5Credentials | None:

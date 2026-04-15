@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+import sys
 from pathlib import Path
 
 import base58
@@ -25,6 +26,10 @@ class TestGenerate:
         assert len(info.address) > 0
         assert manager.exists()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX mode bits are not enforceable on NTFS; Windows uses icacls instead",
+    )
     def test_file_has_correct_permissions(self, manager: WalletManager) -> None:
         manager.generate()
         keypair_path = manager._keypair_path
