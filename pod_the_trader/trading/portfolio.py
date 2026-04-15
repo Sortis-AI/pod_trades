@@ -1,5 +1,6 @@
 """Portfolio tracking: balances, trade history, and PnL computation."""
 
+import asyncio
 import json
 import logging
 from dataclasses import asdict, dataclass
@@ -116,24 +117,49 @@ class Portfolio:
         self._history_path = self._storage_dir / "trade_history.json"
 
     async def get_sol_balance(self, address: str) -> float:
-        """Get real SOL balance from RPC.
+        """Get real SOL balance from RPC, with transient-failure retry.
 
-        Propagates RPC failures — a fake zero would corrupt agent
-        decisions. Logs with the exception type because some wrappers
-        (SolanaRpcException) render as an empty string under str().
+        Shared RPC providers intermittently return errors (rate limits,
+        empty-body SolanaRpcException, transport blips). Retry a few
+        times with exponential backoff and keep intermediate chatter at
+        DEBUG — operators only need to see a failure when every attempt
+        exhausts. On exhaustion, raise; a fake zero would corrupt agent
+        decisions.
         """
-        async with AsyncClient(self._rpc_url) as client:
+        pubkey = Pubkey.from_string(address)
+        max_attempts = 3
+        last_error: Exception | None = None
+
+        for attempt in range(max_attempts):
             try:
-                resp = await client.get_balance(Pubkey.from_string(address))
+                async with AsyncClient(self._rpc_url) as client:
+                    resp = await client.get_balance(pubkey)
+                return resp.value / LAMPORTS_PER_SOL
             except Exception as e:
-                logger.warning(
-                    "get_sol_balance RPC failure for %s: %s: %r",
-                    address[:8],
-                    type(e).__name__,
-                    e,
-                )
-                raise
-            return resp.value / LAMPORTS_PER_SOL
+                last_error = e
+                if attempt < max_attempts - 1:
+                    wait = 2**attempt
+                    logger.debug(
+                        "get_sol_balance transient failure for %s "
+                        "(attempt %d/%d, retry in %ds): %s: %r",
+                        address[:8],
+                        attempt + 1,
+                        max_attempts,
+                        wait,
+                        type(e).__name__,
+                        e,
+                    )
+                    await asyncio.sleep(wait)
+
+        logger.warning(
+            "get_sol_balance RPC exhausted for %s after %d attempts: %s: %r",
+            address[:8],
+            max_attempts,
+            type(last_error).__name__,
+            last_error,
+        )
+        assert last_error is not None
+        raise last_error
 
     async def get_token_balance(self, owner_address: str, mint_address: str) -> float:
         """Get SPL token balance for a wallet+mint.
