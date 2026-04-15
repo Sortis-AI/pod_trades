@@ -14,11 +14,23 @@ An autonomous Solana trading agent. An LLM makes live buy/sell decisions on a si
 
 ## Quick install
 
+**Linux / macOS:**
+
 ```bash
 curl -LsSf https://raw.githubusercontent.com/Sortis-AI/pod_trades/main/install.sh | bash
 ```
 
-This installs git, [`uv`](https://docs.astral.sh/uv/), and Python 3.12 (via snap → apt on Linux or brew on macOS), clones the repo to `~/pod-the-trader`, runs `uv sync`, and drops a launcher at `~/.local/bin/pod-the-trader`. Open a new shell and run:
+Installs git, [`uv`](https://docs.astral.sh/uv/), and Python 3.12 (via snap → apt on Linux or brew on macOS), clones the repo to `~/pod-the-trader`, runs `uv sync`, and drops a launcher at `~/.local/bin/pod-the-trader`.
+
+**Windows 10 / 11** (run in PowerShell inside Windows Terminal — not legacy `cmd.exe`):
+
+```powershell
+irm https://raw.githubusercontent.com/Sortis-AI/pod_trades/main/install.ps1 | iex
+```
+
+Installs git (via winget), `uv`, and Python 3.12, clones the repo to `%USERPROFILE%\pod-the-trader`, runs `uv sync`, and drops a launcher at `%USERPROFILE%\.local\bin\pod-the-trader.cmd`.
+
+Then open a new shell and run:
 
 ```bash
 pod-the-trader
@@ -32,9 +44,9 @@ To upgrade later, run `pod-the-trader update` — it pulls the latest code and r
 
 ## Requirements
 
-- **OS:** Linux or macOS
+- **OS:** Linux, macOS, or Windows 10/11. On Windows, use PowerShell inside Windows Terminal — legacy `cmd.exe` cannot render the Textual dashboard.
 - **Python:** 3.12+
-- **Wallet:** a Solana keypair. The installer can generate one for you on first run; the private key lives at `~/.pod_the_trader/keypair.json` and is never transmitted.
+- **Wallet:** a Solana keypair. The installer can generate one for you on first run; the private key lives at `~/.pod_the_trader/keypair.json` (`%USERPROFILE%\.pod_the_trader\keypair.json` on Windows) and is never transmitted.
 - **Level5 account:** the installer walks you through creating one. Fund it with USDC (or use whatever promotional credits Level5 issues) — the bot refuses to trade when the balance falls below a configured floor.
 - **Some SOL** in your trading wallet to cover Jupiter gas.
 
@@ -127,7 +139,7 @@ This software moves real funds on mainnet. Read [`pod_the_trader/disclaimer.py`]
 
 - The LLM can hallucinate, misread data, and pick bad trade sizes. It has done all of these during development.
 - There is no testnet mode, no dry run, and no undo for on-chain transactions.
-- Your private key lives at `~/.pod_the_trader/keypair.json`. Anyone with access to that file can drain your wallet.
+- Your private key lives at `~/.pod_the_trader/keypair.json` (or `%USERPROFILE%\.pod_the_trader\keypair.json` on Windows). Anyone with access to that file can drain your wallet. The bot restricts it to the owning user only — `chmod 0o600` on POSIX, `icacls /inheritance:r /grant:r <user>:F` on Windows — but filesystem permissions are the last line of defense, not the first.
 - Memecoin trading is high-risk; most positions lose money. **Do not put more into the trading wallet than you can afford to lose entirely.**
 
 The bot enforces several hard guards to reduce foot-gun potential:
