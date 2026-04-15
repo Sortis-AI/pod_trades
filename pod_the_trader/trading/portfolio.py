@@ -18,6 +18,17 @@ TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5
 TOKEN_2022_PROGRAM_ID = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
 ASSOCIATED_TOKEN_PROGRAM_ID = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 
+
+def _host_of(url: str) -> str:
+    """Short hostname for log messages — keeps lines readable."""
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(url).hostname or url
+    except Exception:
+        return url
+
+
 # Phrases that identify "this address has no account" RPC responses.
 # The Solana RPC and solders/solana-py wrappers phrase this several
 # different ways depending on which code path surfaced the error and
@@ -107,54 +118,65 @@ class Portfolio:
 
     def __init__(
         self,
-        rpc_url: str,
+        rpc_url: str | list[str],
         jupiter_dex: JupiterDex,
         storage_dir: str = "~/.pod_the_trader",
     ) -> None:
-        self._rpc_url = rpc_url
+        # Accept a single URL or a prioritized list for failover. Reads
+        # walk the list on every attempt so a rate-limited or unhealthy
+        # endpoint can be skipped in favor of a working one.
+        if isinstance(rpc_url, str):
+            self._rpc_urls: list[str] = [rpc_url]
+        else:
+            self._rpc_urls = [u for u in rpc_url if u]
+            if not self._rpc_urls:
+                raise ValueError("Portfolio requires at least one rpc_url")
+        # Kept for any caller that still reads it (transaction builder,
+        # pollers) — the first URL is treated as primary.
+        self._rpc_url = self._rpc_urls[0]
         self._dex = jupiter_dex
         self._storage_dir = Path(storage_dir).expanduser()
         self._history_path = self._storage_dir / "trade_history.json"
 
     async def get_sol_balance(self, address: str) -> float:
-        """Get real SOL balance from RPC, with transient-failure retry.
+        """Get real SOL balance from RPC, with endpoint failover + retry.
 
-        Shared RPC providers intermittently return errors (rate limits,
-        empty-body SolanaRpcException, transport blips). Retry a few
-        times with exponential backoff and keep intermediate chatter at
-        DEBUG — operators only need to see a failure when every attempt
-        exhausts. On exhaustion, raise; a fake zero would corrupt agent
-        decisions.
+        Walks the full RPC list on each pass. A pass that fails every
+        endpoint waits with exponential backoff before the next pass.
+        Intermediate failures stay at DEBUG — operators only see a
+        WARN when every endpoint, every pass has exhausted. On
+        exhaustion, raise: a fake zero would corrupt agent decisions.
         """
         pubkey = Pubkey.from_string(address)
-        max_attempts = 3
+        max_passes = 3
         last_error: Exception | None = None
 
-        for attempt in range(max_attempts):
-            try:
-                async with AsyncClient(self._rpc_url) as client:
-                    resp = await client.get_balance(pubkey)
-                return resp.value / LAMPORTS_PER_SOL
-            except Exception as e:
-                last_error = e
-                if attempt < max_attempts - 1:
-                    wait = 2**attempt
+        for attempt in range(max_passes):
+            for url in self._rpc_urls:
+                try:
+                    async with AsyncClient(url) as client:
+                        resp = await client.get_balance(pubkey)
+                    return resp.value / LAMPORTS_PER_SOL
+                except Exception as e:
+                    last_error = e
                     logger.debug(
-                        "get_sol_balance transient failure for %s "
-                        "(attempt %d/%d, retry in %ds): %s: %r",
+                        "get_sol_balance transient failure for %s via %s (pass %d/%d): %s: %r",
                         address[:8],
+                        _host_of(url),
                         attempt + 1,
-                        max_attempts,
-                        wait,
+                        max_passes,
                         type(e).__name__,
                         e,
                     )
-                    await asyncio.sleep(wait)
+            if attempt < max_passes - 1:
+                await asyncio.sleep(2**attempt)
 
         logger.warning(
-            "get_sol_balance RPC exhausted for %s after %d attempts: %s: %r",
+            "get_sol_balance exhausted all %d endpoint(s) across %d pass(es) "
+            "for %s: last error %s: %r",
+            len(self._rpc_urls),
+            max_passes,
             address[:8],
-            max_attempts,
             type(last_error).__name__,
             last_error,
         )
@@ -162,9 +184,9 @@ class Portfolio:
         raise last_error
 
     async def get_token_balance(self, owner_address: str, mint_address: str) -> float:
-        """Get SPL token balance for a wallet+mint.
+        """Get SPL token balance for a wallet+mint with endpoint failover.
 
-        Strategy (in order, first non-error wins):
+        Iterates the RPC pool in order. On each endpoint, runs:
 
         1. ``getTokenAccountsByOwner`` with a mint filter under BOTH the
            legacy Token program and Token-2022 program. Dedupes by token
@@ -178,8 +200,64 @@ class Portfolio:
 
         Errors that say "could not find account" are the expected state
         for a wallet that has never held the token — they are silently
-        treated as zero. Any other failure still WARNs so operators can
-        act on real RPC problems.
+        treated as zero. When Path 2 raises a real RPC error (not just
+        "not found"), move on to the next endpoint. Only after every
+        endpoint's Path 2 has errored do we WARN and return zero.
+        """
+        aggregated_path1_errors: list[str] = []
+        aggregated_path2_errors: list[str] = []
+
+        for url in self._rpc_urls:
+            result, path1_errs, path2_errs = await self._read_token_balance_once(
+                url, owner_address, mint_address
+            )
+            aggregated_path1_errors.extend(path1_errs)
+            if result is not None:
+                # Either we got a positive balance or Path 2 cleanly
+                # reported "not found". Either is authoritative on this
+                # endpoint — no need to try another.
+                if aggregated_path1_errors:
+                    logger.debug(
+                        "Path 1 (getTokenAccountsByOwner) noise for %s on wallet %s: %s",
+                        mint_address[:8],
+                        owner_address[:8],
+                        " | ".join(aggregated_path1_errors),
+                    )
+                return result
+            # Path 2 errored on this endpoint — record and try next.
+            aggregated_path2_errors.extend(f"[{_host_of(url)}] {e}" for e in path2_errs)
+
+        # Every endpoint's Path 2 errored. This is the one case worth
+        # surfacing to the operator.
+        if aggregated_path1_errors:
+            logger.debug(
+                "Path 1 (getTokenAccountsByOwner) noise for %s on wallet %s: %s",
+                mint_address[:8],
+                owner_address[:8],
+                " | ".join(aggregated_path1_errors),
+            )
+        logger.warning(
+            "Could not read token balance for %s on wallet %s across %d endpoint(s): %s",
+            mint_address[:8],
+            owner_address[:8],
+            len(self._rpc_urls),
+            " | ".join(aggregated_path2_errors),
+        )
+        return 0.0
+
+    async def _read_token_balance_once(
+        self,
+        url: str,
+        owner_address: str,
+        mint_address: str,
+    ) -> tuple[float | None, list[str], list[str]]:
+        """Single-endpoint body of ``get_token_balance``.
+
+        Returns ``(balance, path1_errors, path2_errors)``. A non-None
+        balance means this endpoint produced an authoritative answer
+        (either a positive reading or a clean "not found"). A None
+        balance combined with non-empty ``path2_errors`` means the
+        caller should try the next endpoint.
         """
         from solana.rpc.types import TokenAccountOpts
 
@@ -187,19 +265,10 @@ class Portfolio:
         mint = Pubkey.from_string(mint_address)
 
         seen: dict[str, float] = {}
-        # Path 1 (bulk getTokenAccountsByOwner) is best-effort — some RPC
-        # providers return vendor-specific errors on it for a wallet that
-        # has simply never held the token. Those look alarming but are
-        # harmless because Path 2 is authoritative. Keep Path 1 errors at
-        # DEBUG only.
         path1_errors: list[str] = []
-        # Path 2 (direct ATA lookup) is the source of truth. If it cleanly
-        # reports "not found", the wallet genuinely has zero. If Path 2
-        # itself raises an unrecognized error, that *is* a real RPC
-        # problem the operator needs to see.
         path2_errors: list[str] = []
 
-        async with AsyncClient(self._rpc_url) as client:
+        async with AsyncClient(url) as client:
             # ---- Path 1: getTokenAccountsByOwner under both programs ----
             for program_id in (TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID):
                 try:
@@ -225,19 +294,9 @@ class Portfolio:
                     )
 
             if seen:
-                return sum(seen.values())
+                return sum(seen.values()), path1_errors, path2_errors
 
             # ---- Path 2: ATA fallback for both programs ----
-            #
-            # Probe the ATA with ``get_account_info`` first. That call
-            # returns ``value=None`` deterministically for addresses
-            # that have never been created on-chain — no exception-
-            # text guessing required. Only when the account actually
-            # exists do we follow up with ``get_token_account_balance``.
-            # This is the fix for a production regression where some
-            # RPC providers wrap the not-found error as a bare
-            # ``SolanaRpcException()`` whose str() / repr() carry no
-            # message at all, defeating any phrase-based filter.
             for program_id in (TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID):
                 try:
                     ata, _ = Pubkey.find_program_address(
@@ -259,28 +318,14 @@ class Portfolio:
                     )
 
         if seen:
-            return sum(seen.values())
+            return sum(seen.values()), path1_errors, path2_errors
 
-        # Path 2 is authoritative. If it cleanly reported "not found"
-        # (path2_errors is empty), the wallet simply doesn't hold this
-        # token — silent zero is correct regardless of what Path 1 said.
-        # Path 1 chatter goes to DEBUG so operators can dig in with
-        # LOG_LEVEL=DEBUG without a WARN on every cycle.
-        if path1_errors:
-            logger.debug(
-                "Path 1 (getTokenAccountsByOwner) noise for %s on wallet %s: %s",
-                mint_address[:8],
-                owner_address[:8],
-                " | ".join(path1_errors),
-            )
         if path2_errors:
-            logger.warning(
-                "Could not read token balance for %s on wallet %s. Direct ATA lookup failed: %s",
-                mint_address[:8],
-                owner_address[:8],
-                " | ".join(path2_errors),
-            )
-        return 0.0
+            # Path 2 errored — caller should try next endpoint.
+            return None, path1_errors, path2_errors
+
+        # Path 2 cleanly reported "not found" — authoritative zero.
+        return 0.0, path1_errors, path2_errors
 
     async def get_portfolio_value(
         self,

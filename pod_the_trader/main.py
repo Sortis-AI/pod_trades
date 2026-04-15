@@ -31,6 +31,24 @@ from pod_the_trader.wallet.setup import WalletSetup
 logger = logging.getLogger("pod_the_trader")
 
 
+def _resolve_rpc_urls(config: Config) -> list[str]:
+    """Build the prioritized RPC endpoint list used for read failover.
+
+    The primary ``solana.rpc_url`` is always first so transactions and
+    reads use the same endpoint by default; additional entries from
+    ``solana.rpc_urls`` follow, deduplicated in order.
+    """
+    primary = config.get("solana.rpc_url", "https://api.mainnet-beta.solana.com")
+    extras = config.get("solana.rpc_urls", []) or []
+    if not isinstance(extras, list):
+        extras = [extras]
+    ordered: list[str] = []
+    for url in [primary, *extras]:
+        if url and url not in ordered:
+            ordered.append(url)
+    return ordered
+
+
 def _configure_logging(config: Config, *, console: bool = True) -> None:
     """Set up logging with split file (verbose) + console (minimal) handlers.
 
@@ -139,7 +157,8 @@ async def async_main(config_path: str | None = None) -> None:
     logger.info("Pod The Trader starting up...")
 
     storage_dir = config.get("storage.base_dir", "~/.pod_the_trader")
-    rpc_url = config.get("solana.rpc_url", "https://api.mainnet-beta.solana.com")
+    rpc_urls = _resolve_rpc_urls(config)
+    rpc_url = rpc_urls[0]  # primary — used for writes and Level5 polling
 
     # 3. Level5 auth
     level5_auth = Level5Auth(storage_dir)
@@ -250,7 +269,7 @@ async def async_main(config_path: str | None = None) -> None:
         ) as jupiter_dex:
             # 10. Portfolio
             portfolio = Portfolio(
-                rpc_url=rpc_url,
+                rpc_url=rpc_urls,
                 jupiter_dex=jupiter_dex,
                 storage_dir=storage_dir,
             )
@@ -578,7 +597,8 @@ async def async_main_tui(config_path: str | None = None) -> None:
     logger.info("Pod The Trader (TUI) starting up...")
 
     storage_dir = config.get("storage.base_dir", "~/.pod_the_trader")
-    rpc_url = config.get("solana.rpc_url", "https://api.mainnet-beta.solana.com")
+    rpc_urls = _resolve_rpc_urls(config)
+    rpc_url = rpc_urls[0]  # primary — used for writes and Level5 polling
 
     level5_auth = Level5Auth(storage_dir)
     creds = level5_auth.setup_interactive()
@@ -664,7 +684,7 @@ async def async_main_tui(config_path: str | None = None) -> None:
             rpc_url=rpc_url,
         ) as jupiter_dex:
             portfolio = Portfolio(
-                rpc_url=rpc_url,
+                rpc_url=rpc_urls,
                 jupiter_dex=jupiter_dex,
                 storage_dir=storage_dir,
             )

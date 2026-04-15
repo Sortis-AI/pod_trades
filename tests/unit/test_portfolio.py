@@ -324,8 +324,11 @@ class TestGetTokenBalance:
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert len(warnings) == 1
         # The authoritative Path 2 (direct ATA lookup) is what surfaces
-        # real RPC failures; Path 1 noise is suppressed to DEBUG.
-        assert "Direct ATA lookup failed" in warnings[0].message
+        # real RPC failures; Path 1 noise is suppressed to DEBUG. The
+        # message now calls out the endpoint count since reads walk an
+        # RPC pool with failover.
+        assert "Could not read token balance" in warnings[0].message
+        assert "endpoint" in warnings[0].message
         assert "connection reset by peer" in warnings[0].message
 
     async def test_dedup_across_programs(self, portfolio: Portfolio) -> None:

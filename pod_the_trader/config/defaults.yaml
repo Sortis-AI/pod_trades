@@ -19,7 +19,18 @@ trading:
   max_price_impact_pct: 5.0
 
 solana:
+  # Primary RPC endpoint used for transactions and as the first read
+  # attempt. Kept for backwards compatibility — `rpc_urls` below is the
+  # authoritative list for reads.
   rpc_url: "https://api.mainnet-beta.solana.com"
+  # Prioritized list of read endpoints. Portfolio reads walk this list
+  # on every attempt so a rate-limited or unhealthy endpoint can be
+  # skipped in favor of a working one. `rpc_url` is prepended
+  # automatically if it's not already in the list.
+  rpc_urls:
+    - "https://solana-mainnet.gateway.tatum.io"
+    - "https://api.mainnet.solana.com"
+    - "https://solana-rpc.publicnode.com"
   ws_url: "wss://api.mainnet-beta.solana.com"
 
 jupiter:
