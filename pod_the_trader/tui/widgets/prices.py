@@ -85,7 +85,7 @@ class PriceActionWidget(Static):
                     f"{label_str} [b]${_fmt_price(latest)}[/]  [{color}]{arrow} {delta:+.2f}%[/]"
                 )
             else:
-                price_line = f"{label_str} [b]${_fmt_price(latest)}[/]"
+                price_line = f"{label_str} [b]${_fmt_price(latest)}[/]  [dim](collecting…)[/]"
 
             sparkline = _sparkline(values, width=spark_w)
             lines.append(price_line)
@@ -103,15 +103,38 @@ def _fmt_price(price: float) -> str:
 
 
 def _sparkline(values: list[float], width: int = 60) -> str:
-    if not values:
+    """Render a sparkline string of exactly ``width`` characters.
+
+    Always fills the full width regardless of sample count so a fresh
+    run with one or two samples still shows a visible chart instead of
+    a blank line. Dense data is downsampled by nearest-neighbor; sparse
+    data is stretched to width. When all values are equal (or there's
+    only one value), renders a flat mid-level line so the user sees a
+    line rather than an invisible row of spaces.
+    """
+    if not values or width <= 0:
         return ""
-    if len(values) > width:
-        step = len(values) / width
-        values = [values[int(i * step)] for i in range(width)]
+
+    # Stretch or downsample to exactly ``width`` via nearest-neighbor.
+    if len(values) != width:
+        if len(values) == 1:
+            stretched = [values[0]] * width
+        else:
+            step = (len(values) - 1) / (width - 1) if width > 1 else 0
+            stretched = [values[min(int(round(i * step)), len(values) - 1)] for i in range(width)]
+        values = stretched
 
     lo = min(values)
     hi = max(values)
-    span = hi - lo if hi > lo else 1.0
+    # All samples equal (span==0): draw a flat mid-level line. The old
+    # behaviour printed the lowest char (a space), which rendered as an
+    # invisible row — exactly what made the chart look "missing" on a
+    # one-sample fresh run.
+    if hi <= lo:
+        mid = SPARK_CHARS[len(SPARK_CHARS) // 2]
+        return mid * width
+
+    span = hi - lo
     chars = []
     for v in values:
         normalized = (v - lo) / span

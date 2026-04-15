@@ -172,7 +172,11 @@ class TestGetBalance:
         assert balance == pytest.approx(1.045045)
 
     @respx.mock
-    async def test_uses_cached_on_failure(self, client: Level5Client) -> None:
+    async def test_raises_on_failure_even_with_prior_success(self, client: Level5Client) -> None:
+        # A silent cache-fallback would strand the funding wait with a
+        # stale is_active=False if a transient error lands between the
+        # deposit and the first successful post-deposit poll. Callers
+        # are responsible for retry/tolerance.
         respx.get(f"{BASE_URL}/proxy/{TEST_TOKEN}/balance").mock(
             side_effect=[
                 httpx.Response(
@@ -180,7 +184,7 @@ class TestGetBalance:
                     json={
                         "usdc_balance": 10000000,
                         "credit_balance": 0,
-                        "is_active": True,
+                        "is_active": False,
                     },
                 ),
                 httpx.Response(500),
@@ -188,9 +192,10 @@ class TestGetBalance:
         )
         balance1 = await client.get_balance()
         assert balance1 == 10.0
+        assert client.last_is_active is False
 
-        balance2 = await client.get_balance()
-        assert balance2 == 10.0  # Cached
+        with pytest.raises(Level5Error, match="Failed to check balance"):
+            await client.get_balance()
 
     @respx.mock
     async def test_raises_without_cache(self, client: Level5Client) -> None:

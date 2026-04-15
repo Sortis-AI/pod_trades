@@ -103,6 +103,68 @@ class TestGetTokenBalance:
 
         assert balance == 0.0
 
+    async def test_fresh_wallet_ata_not_found_is_silent(
+        self, portfolio: Portfolio, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Fresh wallet that has never held the token: RPC raises "could
+        not find account" on the ATA fallback. This is the normal zero
+        case and must NOT surface as a WARNING — a pleb user seeing that
+        log thinks the bot is broken.
+        """
+        empty_resp = MagicMock()
+        empty_resp.value = []
+        mock_client = AsyncMock()
+        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(return_value=empty_resp)
+        mock_client.get_token_account_balance = AsyncMock(
+            side_effect=Exception(
+                'RPCException(InvalidParamsMessage { message: "Invalid param: '
+                'could not find account" })'
+            )
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch("pod_the_trader.trading.portfolio.AsyncClient", return_value=mock_client),
+            caplog.at_level("DEBUG", logger="pod_the_trader.trading.portfolio"),
+        ):
+            balance = await portfolio.get_token_balance(
+                "11111111111111111111111111111111", TEST_MINT
+            )
+
+        assert balance == 0.0
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert not warnings, f"Expected no WARNINGs, got: {[r.message for r in warnings]}"
+
+    async def test_real_rpc_failure_still_warns(
+        self, portfolio: Portfolio, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-"not found" RPC error (timeout, rate limit, etc.) still
+        needs to reach the operator so they can act on it.
+        """
+        mock_client = AsyncMock()
+        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(
+            side_effect=Exception("RPC node timeout after 30s")
+        )
+        mock_client.get_token_account_balance = AsyncMock(
+            side_effect=Exception("connection reset by peer")
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch("pod_the_trader.trading.portfolio.AsyncClient", return_value=mock_client),
+            caplog.at_level("WARNING", logger="pod_the_trader.trading.portfolio"),
+        ):
+            balance = await portfolio.get_token_balance(
+                "11111111111111111111111111111111", TEST_MINT
+            )
+
+        assert balance == 0.0
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "All RPC paths failed" in warnings[0].message
+
     async def test_dedup_across_programs(self, portfolio: Portfolio) -> None:
         """Same account pubkey returned under both program queries — dedupe."""
         acc = _make_mock_token_account("SameAccount", 500.0)

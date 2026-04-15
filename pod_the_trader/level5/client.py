@@ -187,34 +187,33 @@ class Level5Client:
         credited the account (first deposit or first SQUIRE lock), and
         pod-the-trader's startup funding wait uses it as the signal to
         stop polling and start trading.
+
+        Raises ``Level5Error`` on any transport or HTTP failure. Does
+        NOT fall back to cached values: callers all wrap this in their
+        own retry/tolerance logic (the funding orchestrator retries on
+        the configured poll interval; the agent loop logs and continues
+        to the next cycle), and a silent cache fallback here would
+        strand the funding wait with stale ``is_active=False`` when a
+        transient error lands between the deposit and the first
+        successful post-deposit poll.
         """
         url = f"{self._base_url}/proxy/{self._api_token}/balance"
         try:
             response = await self._client.get(url)
             response.raise_for_status()
             data = response.json()
-            # usdc_balance and credit_balance are in microunits (6 decimals)
-            usdc = int(data.get("usdc_balance", 0))
-            credit = int(data.get("credit_balance", 0))
-            self._last_usdc_only = usdc / _USDC_DECIMALS
-            self._last_credit_only = credit / _USDC_DECIMALS
-            self._last_is_active = bool(data.get("is_active", False))
-            balance = (usdc + credit) / _USDC_DECIMALS
-            self._last_balance_usdc = balance
-            return balance
         except Exception as e:
-            # Also try the X-Balance-Remaining header
-            if hasattr(e, "response"):
-                header_balance = self.update_balance_from_headers(e.response.headers)
-                if header_balance is not None:
-                    return header_balance
-            if self._last_balance_usdc is not None:
-                logger.debug(
-                    "Balance check failed, using cached: $%.4f",
-                    self._last_balance_usdc,
-                )
-                return self._last_balance_usdc
             raise Level5Error(f"Failed to check balance: {e}") from e
+
+        # usdc_balance and credit_balance are in microunits (6 decimals)
+        usdc = int(data.get("usdc_balance", 0))
+        credit = int(data.get("credit_balance", 0))
+        self._last_usdc_only = usdc / _USDC_DECIMALS
+        self._last_credit_only = credit / _USDC_DECIMALS
+        self._last_is_active = bool(data.get("is_active", False))
+        balance = (usdc + credit) / _USDC_DECIMALS
+        self._last_balance_usdc = balance
+        return balance
 
     def update_balance_from_headers(self, headers: httpx.Headers) -> float | None:
         """Extract and cache balance from response headers."""

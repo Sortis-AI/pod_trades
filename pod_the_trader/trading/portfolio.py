@@ -147,8 +147,19 @@ class Portfolio:
         if seen:
             return sum(seen.values())
 
-        # All paths failed — surface the real error so the user can act on it.
-        if errors:
+        # If every RPC path failed with "could not find account", the wallet
+        # has simply never held this token — the ATA was never created.
+        # That's the normal zero-balance case on a fresh wallet, not an
+        # error worth scaring the operator with. Log at DEBUG and return 0.
+        # Any other error category (timeouts, rate limits, unexpected RPC
+        # faults) still WARNs so real problems surface.
+        if errors and all("could not find account" in e.lower() for e in errors):
+            logger.debug(
+                "Token balance for %s on wallet %s is zero (ATA does not exist yet)",
+                mint_address[:8],
+                owner_address[:8],
+            )
+        elif errors:
             logger.warning(
                 "Could not read token balance for %s on wallet %s. All RPC paths failed: %s",
                 mint_address[:8],
