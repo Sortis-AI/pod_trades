@@ -179,4 +179,38 @@ install.sh          # One-shot installer (curl | bash)
 
 ## License
 
-This project is not currently distributed under an open-source license — it's source-available for review and personal use. If you want to fork it or build on it, open an issue first.
+Pod The Trader is free software released under the **GNU General Public License v3.0 or later**. See [`LICENSE`](LICENSE) for the full text.
+
+    Pod The Trader is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+    GNU General Public License for more details.
+
+## Disclaimer
+
+This is the full disclaimer shown at every launch. You must type `I ACCEPT` before the bot will start. It is reproduced here verbatim from [`pod_the_trader/disclaimer.py`](pod_the_trader/disclaimer.py) so you can read it before you install.
+
+> **POD THE TRADER — DISCLAIMER**
+>
+> This is autonomous trading software that will buy and sell real tokens on the Solana mainnet using your wallet and your money. Before you start it, read this and make sure you understand what you're agreeing to.
+>
+> 1. **REAL FUNDS.** Every trade moves actual SOL, USDC, and SPL tokens from your wallet. There is no testnet mode, no dry run, no simulation layer. Losses are real and on-chain transactions are irreversible.
+>
+> 2. **LLM-DRIVEN DECISIONS.** Trading decisions are made by a large language model (minimax-m2.7 via Level5). The model can hallucinate, misread market data, make arithmetic errors, pick bad sizes, or act on stale context. It has already done all of these during development. Do not assume it will make profitable trades.
+>
+> 3. **NO WARRANTY.** This software is experimental and provided as-is, with no guarantee of correctness, profitability, uptime, or data integrity. Recent history includes pricing bugs, unintended trade routes, dust trades, and decision-execution mismatches. More bugs almost certainly remain.
+>
+> 4. **YOU ARE THE OPERATOR.** You are responsible for monitoring the bot, setting sensible position limits, funding the wallet appropriately, and shutting it down if something looks wrong. The bot will not stop itself just because it's losing money.
+>
+> 5. **NOT FINANCIAL ADVICE.** Nothing this software outputs — on-screen, in logs, or in summaries — constitutes financial, legal, tax, or investment advice. Memecoin trading is high-risk and most positions lose money.
+>
+> 6. **KEY CUSTODY.** Your private key lives in `~/.pod_the_trader/`. Anyone with access to that file can drain your wallet. You are solely responsible for the security of that file and the machine it sits on.
+>
+> 7. **NO RECOURSE.** If the bot loses your money, executes an unintended trade, fails to execute an intended trade, or misreports P&L, there is no one to appeal to. Do not put more into this wallet than you can afford to lose entirely.
+>
+> By continuing, you confirm that you have read and understood the above, that you accept full responsibility for any losses, and that you are running this software voluntarily and at your own risk.
