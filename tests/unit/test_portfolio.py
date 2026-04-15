@@ -200,6 +200,46 @@ class TestGetTokenBalance:
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert not warnings, f"Expected no WARNINGs, got: {[r.message for r in warnings]}"
 
+    async def test_path1_vendor_error_with_clean_path2_is_silent(
+        self, portfolio: Portfolio, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Production regression: some RPC providers raise a vendor-
+        specific error on ``getTokenAccountsByOwner`` for wallets that
+        have never held the token (not a recognizable "account not
+        found" string). Path 2 (direct ATA lookup) then cleanly reports
+        not-found. The bot must treat this as the normal zero state and
+        NOT emit a WARNING — Path 2 is authoritative.
+        """
+        mock_client = AsyncMock()
+        # Path 1: some unrecognized vendor error — not a classic "not found".
+        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(
+            side_effect=Exception("Invalid account data for mint under this program")
+        )
+        # Path 2: clean not-found.
+        mock_client.get_token_account_balance = AsyncMock(
+            side_effect=Exception(
+                'RPCException(InvalidParamsMessage { message: "Invalid param: '
+                'could not find account" })'
+            )
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch("pod_the_trader.trading.portfolio.AsyncClient", return_value=mock_client),
+            caplog.at_level("DEBUG", logger="pod_the_trader.trading.portfolio"),
+        ):
+            balance = await portfolio.get_token_balance(
+                "11111111111111111111111111111111", TEST_MINT
+            )
+
+        assert balance == 0.0
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert not warnings, f"Expected no WARNINGs, got: {[r.message for r in warnings]}"
+        # Path 1 chatter should still reach DEBUG for diagnosis.
+        debug_messages = [r.message for r in caplog.records if r.levelname == "DEBUG"]
+        assert any("Path 1" in m for m in debug_messages)
+
     async def test_real_rpc_failure_still_warns(
         self, portfolio: Portfolio, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -227,7 +267,10 @@ class TestGetTokenBalance:
         assert balance == 0.0
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert len(warnings) == 1
-        assert "All RPC paths failed" in warnings[0].message
+        # The authoritative Path 2 (direct ATA lookup) is what surfaces
+        # real RPC failures; Path 1 noise is suppressed to DEBUG.
+        assert "Direct ATA lookup failed" in warnings[0].message
+        assert "connection reset by peer" in warnings[0].message
 
     async def test_dedup_across_programs(self, portfolio: Portfolio) -> None:
         """Same account pubkey returned under both program queries — dedupe."""

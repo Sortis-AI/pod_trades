@@ -126,7 +126,17 @@ class Portfolio:
         mint = Pubkey.from_string(mint_address)
 
         seen: dict[str, float] = {}
-        errors: list[str] = []
+        # Path 1 (bulk getTokenAccountsByOwner) is best-effort — some RPC
+        # providers return vendor-specific errors on it for a wallet that
+        # has simply never held the token. Those look alarming but are
+        # harmless because Path 2 is authoritative. Keep Path 1 errors at
+        # DEBUG only.
+        path1_errors: list[str] = []
+        # Path 2 (direct ATA lookup) is the source of truth. If it cleanly
+        # reports "not found", the wallet genuinely has zero. If Path 2
+        # itself raises an unrecognized error, that *is* a real RPC
+        # problem the operator needs to see.
+        path2_errors: list[str] = []
 
         async with AsyncClient(self._rpc_url) as client:
             # ---- Path 1: getTokenAccountsByOwner under both programs ----
@@ -148,7 +158,7 @@ class Portfolio:
                 except Exception as e:
                     if _is_account_not_found(e):
                         continue
-                    errors.append(
+                    path1_errors.append(
                         f"getTokenAccountsByOwner({str(program_id)[:12]}): "
                         f"{type(e).__name__}: {e!r}"
                     )
@@ -169,7 +179,7 @@ class Portfolio:
                 except Exception as e:
                     if _is_account_not_found(e):
                         continue
-                    errors.append(
+                    path2_errors.append(
                         f"getTokenAccountBalance(ATA, {str(program_id)[:12]}): "
                         f"{type(e).__name__}: {e!r}"
                     )
@@ -177,15 +187,24 @@ class Portfolio:
         if seen:
             return sum(seen.values())
 
-        # If nothing raised a real error, every path just returned "no
-        # such account" — the normal zero-balance state for a wallet
-        # that has never held this token. Silent zero is correct here.
-        if errors:
-            logger.warning(
-                "Could not read token balance for %s on wallet %s. All RPC paths failed: %s",
+        # Path 2 is authoritative. If it cleanly reported "not found"
+        # (path2_errors is empty), the wallet simply doesn't hold this
+        # token — silent zero is correct regardless of what Path 1 said.
+        # Path 1 chatter goes to DEBUG so operators can dig in with
+        # LOG_LEVEL=DEBUG without a WARN on every cycle.
+        if path1_errors:
+            logger.debug(
+                "Path 1 (getTokenAccountsByOwner) noise for %s on wallet %s: %s",
                 mint_address[:8],
                 owner_address[:8],
-                " | ".join(errors),
+                " | ".join(path1_errors),
+            )
+        if path2_errors:
+            logger.warning(
+                "Could not read token balance for %s on wallet %s. Direct ATA lookup failed: %s",
+                mint_address[:8],
+                owner_address[:8],
+                " | ".join(path2_errors),
             )
         return 0.0
 
