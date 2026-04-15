@@ -3,11 +3,14 @@
 import logging
 import os
 
+import base58
 from solders.keypair import Keypair
 
 from pod_the_trader.wallet.manager import WalletManager
 
 logger = logging.getLogger(__name__)
+
+_BACKUP_CONFIRMATION = "I SAVED IT"
 
 
 class WalletSetup:
@@ -46,7 +49,8 @@ class WalletSetup:
 
         if choice == "1":
             info = self._manager.generate()
-            print(f"New wallet generated: {info.address}")
+            print(f"\nNew wallet generated: {info.address}")
+            self._print_backup_and_confirm(info.keypair)
             print("IMPORTANT: Fund this wallet with SOL before proceeding.")
             return info.keypair
 
@@ -61,3 +65,58 @@ class WalletSetup:
 
         print("Wallet setup cancelled.")
         return None
+
+    def _print_backup_and_confirm(self, keypair: Keypair) -> None:
+        """Print the private key and block until the user confirms backup.
+
+        This runs exactly once, immediately after a fresh wallet is
+        generated. The user will never see this key again — it is not
+        recoverable from the keypair.json file in a format Phantom or
+        Solflare can import without manual conversion, and the seed
+        phrase does not exist (solders keypairs are random bytes, not
+        BIP-39 derived). So this prompt is the one and only chance to
+        capture it.
+
+        The format is base58(bytes(keypair)) — a 64-byte (32-byte
+        secret + 32-byte pubkey) base58 string, which is what
+        Phantom's "Import Private Key" field accepts directly.
+        """
+        private_key_b58 = base58.b58encode(bytes(keypair)).decode()
+
+        bar = "=" * 68
+        print()
+        print(bar)
+        print("  BACK UP YOUR WALLET PRIVATE KEY — DO THIS NOW")
+        print(bar)
+        print()
+        print("  This is the ONLY time this key will be displayed.")
+        print("  If you lose it, the funds in this wallet are gone forever.")
+        print("  Anyone who has it can drain the wallet.")
+        print()
+        print("  Private key (base58, Phantom/Solflare compatible):")
+        print()
+        print(f"    {private_key_b58}")
+        print()
+        print("  How to back it up:")
+        print("    1. Copy the string above into a password manager")
+        print("       (1Password, Bitwarden, etc.), OR")
+        print("    2. Write it down on paper and store it somewhere safe.")
+        print()
+        print("  Do NOT:")
+        print("    - Paste it into chat, email, or a screenshot")
+        print("    - Store it in plain text on a shared machine")
+        print("    - Share it with anyone, including support staff")
+        print()
+        print(bar)
+        print(f'  Type exactly "{_BACKUP_CONFIRMATION}" once you have saved it.')
+        print(bar)
+
+        while True:
+            response = input("> ").strip()
+            if response == _BACKUP_CONFIRMATION:
+                print("Backup confirmed.\n")
+                return
+            print(
+                f'Please type exactly "{_BACKUP_CONFIRMATION}" '
+                "(case-sensitive, no quotes) to continue."
+            )

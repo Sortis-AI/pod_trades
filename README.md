@@ -24,7 +24,9 @@ This installs git, [`uv`](https://docs.astral.sh/uv/), and Python 3.12 (via snap
 pod-the-trader
 ```
 
-On first launch you'll see a disclaimer. Type `I ACCEPT` to continue, then walk through the Level5 registration and wallet-generation prompts.
+On first launch you'll see a disclaimer. Type `I ACCEPT` to continue, then walk through the Level5 registration and wallet-generation prompts. If you let the wizard generate a new wallet, it will print the private key exactly once and require you to type `I SAVED IT` to confirm you've backed it up — **this is your only chance to capture it**, so copy it into a password manager or write it down before continuing.
+
+To upgrade later, run `pod-the-trader update` — it pulls the latest code and re-runs `uv sync`.
 
 > **Heads-up:** the bot moves real funds on Solana mainnet. Start by funding the wallet with a small amount you're comfortable losing entirely, watch it run for a few cycles, and read the disclaimer carefully — it's shown at every launch for a reason.
 
@@ -73,6 +75,9 @@ pod-the-trader --tui
 
 # Custom config
 pod-the-trader --config path/to/config.yaml
+
+# Pull the latest code and re-sync dependencies
+pod-the-trader update
 ```
 
 Keybindings inside the TUI:
