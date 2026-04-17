@@ -143,7 +143,10 @@ def _print_post_registration_instructions(
     print(flush=True)
 
 
-async def async_main(config_path: str | None = None) -> None:
+async def async_main(
+    config_path: str | None = None,
+    base_domain_override: str | None = None,
+) -> None:
     """Main async entry point."""
     load_dotenv()
 
@@ -154,9 +157,12 @@ async def async_main(config_path: str | None = None) -> None:
         print(f"Configuration error: {e}", file=sys.stderr)
         sys.exit(1)
 
+    base_domain = _resolve_base_domain(config, base_domain_override)
+
     # 2. Configure logging
     _configure_logging(config)
     logger.info("Pod The Trader starting up...")
+    logger.info("Using Level5 domain: %s", base_domain)
 
     storage_dir = config.get("storage.base_dir", "~/.pod_the_trader")
     rpc_urls = _resolve_rpc_urls(config)
@@ -198,7 +204,7 @@ async def async_main(config_path: str | None = None) -> None:
     async with Level5Client(
         api_token=api_token,
         deposit_address=deposit_address,
-        base_url=config.get("level5.base_url", "https://api.level5.cloud"),
+        base_domain=base_domain,
     ) as level5_client:
         # 7. Register with Level5 if new
         if creds and creds.is_new:
@@ -541,21 +547,44 @@ def _print_shutdown_summary(
     print("\n".join(lines))
 
 
-def _parse_cli_args(argv: list[str]) -> tuple[str | None, str]:
-    """Parse command-line args into (config_path, ui_mode).
+def _parse_cli_args(argv: list[str]) -> tuple[str | None, str, str | None]:
+    """Parse command-line args into (config_path, ui_mode, base_domain).
 
     ui_mode ∈ {"auto", "tui", "cli"}. "auto" picks tui iff stdout is a TTY.
+
+    ``base_domain`` is the Level5 deployment host (e.g. ``level5.cloud``
+    or ``usepod.ai``). ``None`` means "fall back to the config value,
+    then the default". Accepts both ``--base-domain foo`` and
+    ``--base-domain=foo`` forms.
     """
     config_path: str | None = None
     ui_mode = "auto"
-    for arg in argv:
+    base_domain: str | None = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
         if arg == "--tui":
             ui_mode = "tui"
         elif arg == "--cli":
             ui_mode = "cli"
+        elif arg == "--base-domain":
+            if i + 1 >= len(argv):
+                raise SystemExit("--base-domain requires a value (e.g. level5.cloud)")
+            base_domain = argv[i + 1]
+            i += 1
+        elif arg.startswith("--base-domain="):
+            base_domain = arg.split("=", 1)[1]
         elif not arg.startswith("--"):
             config_path = arg
-    return config_path, ui_mode
+        i += 1
+    return config_path, ui_mode, base_domain
+
+
+def _resolve_base_domain(config: Config, cli_override: str | None) -> str:
+    """CLI flag wins over config; config wins over hardcoded default."""
+    if cli_override:
+        return cli_override.strip().strip("/")
+    return str(config.get("level5.base_domain", "level5.cloud")).strip().strip("/")
 
 
 def _resolve_ui_mode(requested: str) -> str:
@@ -659,18 +688,21 @@ def main() -> None:
 
     require_acceptance()
 
-    config_path, ui_mode = _parse_cli_args(sys.argv[1:])
+    config_path, ui_mode, base_domain = _parse_cli_args(sys.argv[1:])
     resolved = _resolve_ui_mode(ui_mode)
     try:
         if resolved == "tui":
-            asyncio.run(async_main_tui(config_path))
+            asyncio.run(async_main_tui(config_path, base_domain))
         else:
-            asyncio.run(async_main(config_path))
+            asyncio.run(async_main(config_path, base_domain))
     except KeyboardInterrupt:
         print("\nShutdown.")
 
 
-async def async_main_tui(config_path: str | None = None) -> None:
+async def async_main_tui(
+    config_path: str | None = None,
+    base_domain_override: str | None = None,
+) -> None:
     """TUI entry point: launch the Textual dashboard.
 
     Mirrors async_main but launches a PodDashboardApp instead of running
@@ -688,8 +720,11 @@ async def async_main_tui(config_path: str | None = None) -> None:
         print(f"Configuration error: {e}", file=sys.stderr)
         sys.exit(1)
 
+    base_domain = _resolve_base_domain(config, base_domain_override)
+
     _configure_logging(config, console=False)
     logger.info("Pod The Trader (TUI) starting up...")
+    logger.info("Using Level5 domain: %s", base_domain)
 
     storage_dir = config.get("storage.base_dir", "~/.pod_the_trader")
     rpc_urls = _resolve_rpc_urls(config)
@@ -714,7 +749,7 @@ async def async_main_tui(config_path: str | None = None) -> None:
     async with Level5Client(
         api_token=creds.api_token if creds else None,
         deposit_address=creds.deposit_address if creds else None,
-        base_url=config.get("level5.base_url", "https://api.level5.cloud"),
+        base_domain=base_domain,
     ) as level5_client:
         if creds and creds.is_new:
             try:

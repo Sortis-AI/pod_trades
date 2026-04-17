@@ -5,7 +5,12 @@ agent:
   max_tokens: 2048
 
 level5:
-  base_url: "https://api.level5.cloud"
+  # Canonical Level5 domain. The API endpoint is derived as
+  # `https://api.<base_domain>` and the dashboard as
+  # `https://<base_domain>/dashboard/<api_token>`. Override with the
+  # `--base-domain` CLI flag (e.g. `--base-domain usepod.ai`) when
+  # pointing at an alternate deployment.
+  base_domain: "level5.cloud"
   max_daily_spend_usdc: 10.0
   min_balance_threshold_usdc: 0.1
 

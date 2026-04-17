@@ -67,11 +67,13 @@ class Level5Client:
         self,
         api_token: str | None = None,
         deposit_address: str | None = None,
-        base_url: str = "https://api.level5.cloud",
+        base_domain: str = "level5.cloud",
     ) -> None:
         self._api_token = api_token
         self._deposit_address = deposit_address
-        self._base_url = base_url.rstrip("/")
+        self._base_domain = base_domain.strip().strip("/")
+        self._base_url = f"https://api.{self._base_domain}"
+        self._dashboard_base = f"https://{self._base_domain}"
         self._http: httpx.AsyncClient | None = None
         self._last_balance_usdc: float | None = None
         # Split between deposited USDC and promotional credits — both in
@@ -242,7 +244,7 @@ class Level5Client:
 
     def get_dashboard_url(self) -> str:
         """Return the Level5 dashboard URL for this account."""
-        return f"https://level5.cloud/dashboard/{self._api_token}"
+        return f"{self._dashboard_base}/dashboard/{self._api_token}"
 
     def is_registered(self) -> bool:
         """Check if we have a valid API token."""

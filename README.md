@@ -70,6 +70,7 @@ The knobs you'll care about most:
 | `trading.cooldown_seconds` | `300` | Seconds to wait between cycles. |
 | `trading.max_price_impact_pct` | `5.0` | Refuse swaps with worse Jupiter-reported price impact. |
 | `level5.min_balance_threshold_usdc` | `0.1` | Pause trading when Level5 balance drops below this floor. |
+| `level5.base_domain` | `level5.cloud` | Host for the Level5 API (`api.<domain>`) and dashboard (`<domain>/dashboard/<token>`). Override on the command line with `--base-domain`. |
 | `agent.model` | `minimax-m2.7` | The LLM Level5 proxies to. |
 | `agent.max_iterations_per_turn` | `10` | Max tool-call iterations per cycle. |
 
@@ -87,6 +88,9 @@ pod-the-trader --tui
 
 # Custom config
 pod-the-trader --config path/to/config.yaml
+
+# Point at an alternate Level5 deployment (default: level5.cloud)
+pod-the-trader --base-domain usepod.ai
 
 # Pull the latest code and re-sync dependencies
 pod-the-trader update

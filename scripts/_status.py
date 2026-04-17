@@ -13,15 +13,29 @@ KEYPAIR_FILE = STORAGE / "keypair.json"
 LEVEL5_CREDS = STORAGE / "level5_credentials.json"
 
 
+def _level5_domain() -> str:
+    """Resolve the Level5 base domain from the packaged config.
+
+    Lets ``_status.py`` stay in sync with whatever the bot is configured
+    to use for users running against a non-default deployment. Falls back
+    to ``level5.cloud`` if the config can't be read for any reason —
+    this script is a diagnostic, not a trade path.
+    """
+    try:
+        from pod_the_trader.config import Config
+
+        return str(Config().get("level5.base_domain", "level5.cloud"))
+    except Exception:
+        return "level5.cloud"
+
+
 def section(title: str) -> None:
     print(f"\n=== {title} ===")
 
 
 def fmt_ts(iso: str) -> str:
     try:
-        return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime(
-            "%Y-%m-%d %H:%M:%S UTC"
-        )
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S UTC")
     except Exception:
         return iso
 
@@ -56,8 +70,9 @@ def show_level5_balance() -> None:
 
     import urllib.request
 
+    domain = _level5_domain()
     try:
-        url = f"https://api.level5.cloud/proxy/{token}/balance"
+        url = f"https://api.{domain}/proxy/{token}/balance"
         req = urllib.request.Request(
             url,
             headers={"User-Agent": "pod-the-trader/0.1 (status check)"},
@@ -71,7 +86,7 @@ def show_level5_balance() -> None:
         print(f"  Credits: ${credit:.4f}")
         print(f"  Total:   ${total:.4f}")
         print(f"  Active:  {data.get('is_active')}")
-        print(f"  Dashboard: https://level5.cloud/dashboard/{token}")
+        print(f"  Dashboard: https://{domain}/dashboard/{token}")
     except Exception as e:
         print(f"  (failed to fetch: {e})")
 
@@ -146,10 +161,7 @@ def show_trade_history() -> None:
     print(f"  Avg buy:  ${summary['avg_buy_price']:.8f}")
     print(f"  Avg sell: ${summary['avg_sell_price']:.8f}")
     print(f"  Bot pos:  {summary['tokens_held']:,.4f} tokens (bot trades only)")
-    print(
-        f"  Gas spent: ${summary['gas_spent_usd']:.4f} "
-        f"({summary['gas_spent_sol']:.6f} SOL)"
-    )
+    print(f"  Gas spent: ${summary['gas_spent_usd']:.4f} ({summary['gas_spent_sol']:.6f} SOL)")
 
 
 def show_recent_log() -> None:

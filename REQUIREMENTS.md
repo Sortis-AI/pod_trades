@@ -362,7 +362,7 @@ agent:
   max_tokens: 2048
 
 level5:
-  base_url: "https://api.level5.cloud"
+  base_domain: "level5.cloud"  # API is derived as https://api.<base_domain>; dashboard as https://<base_domain>/dashboard/<token>. Overridable via --base-domain.
   max_daily_spend_usdc: 10.0
   min_balance_threshold_usdc: 2.0
 

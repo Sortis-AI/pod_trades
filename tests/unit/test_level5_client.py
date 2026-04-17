@@ -10,7 +10,8 @@ from pod_the_trader.level5.client import (
     _sanitize_url,
 )
 
-BASE_URL = "https://api.level5.cloud"
+BASE_DOMAIN = "level5.cloud"
+BASE_URL = f"https://api.{BASE_DOMAIN}"
 TEST_TOKEN = "test_token_abcdef123456"
 
 
@@ -19,7 +20,7 @@ async def client():
     async with Level5Client(
         api_token=TEST_TOKEN,
         deposit_address="DepAddr123",
-        base_url=BASE_URL,
+        base_domain=BASE_DOMAIN,
     ) as c:
         yield c
 
@@ -56,7 +57,7 @@ class TestRegister:
         respx.post(f"{BASE_URL}/v1/register").mock(
             return_value=httpx.Response(200, json=self._good_response())
         )
-        async with Level5Client(base_url=BASE_URL) as client:
+        async with Level5Client(base_domain=BASE_DOMAIN) as client:
             account = await client.register()
         assert account.api_token == "new_token_xyz"
         # deposit_address is the sovereign contract (instructions.contract_address)
@@ -78,7 +79,7 @@ class TestRegister:
         body = self._good_response()
         body["instructions"].pop("contract_address")
         respx.post(f"{BASE_URL}/v1/register").mock(return_value=httpx.Response(200, json=body))
-        async with Level5Client(base_url=BASE_URL) as client:
+        async with Level5Client(base_domain=BASE_DOMAIN) as client:
             with pytest.raises(Level5Error) as exc:
                 await client.register()
         assert "contract_address" in str(exc.value)
@@ -95,7 +96,7 @@ class TestRegister:
         body = self._good_response()
         body.pop("instructions")
         respx.post(f"{BASE_URL}/v1/register").mock(return_value=httpx.Response(200, json=body))
-        async with Level5Client(base_url=BASE_URL) as client:
+        async with Level5Client(base_domain=BASE_DOMAIN) as client:
             with pytest.raises(Level5Error) as exc:
                 await client.register()
         assert "contract_address" in str(exc.value)
@@ -105,7 +106,7 @@ class TestRegister:
         body = self._good_response()
         body.pop("deposit_code")
         respx.post(f"{BASE_URL}/v1/register").mock(return_value=httpx.Response(200, json=body))
-        async with Level5Client(base_url=BASE_URL) as client:
+        async with Level5Client(base_domain=BASE_DOMAIN) as client:
             with pytest.raises(Level5Error) as exc:
                 await client.register()
         assert "deposit_code" in str(exc.value)
@@ -115,7 +116,7 @@ class TestRegister:
         body = self._good_response()
         body.pop("api_token")
         respx.post(f"{BASE_URL}/v1/register").mock(return_value=httpx.Response(200, json=body))
-        async with Level5Client(base_url=BASE_URL) as client:
+        async with Level5Client(base_domain=BASE_DOMAIN) as client:
             with pytest.raises(Level5Error) as exc:
                 await client.register()
         assert "api_token" in str(exc.value)
@@ -125,7 +126,7 @@ class TestRegister:
         body = self._good_response()
         body["instructions"]["contract_address"] = ""
         respx.post(f"{BASE_URL}/v1/register").mock(return_value=httpx.Response(200, json=body))
-        async with Level5Client(base_url=BASE_URL) as client:
+        async with Level5Client(base_domain=BASE_DOMAIN) as client:
             with pytest.raises(Level5Error):
                 await client.register()
 
@@ -134,7 +135,7 @@ class TestRegister:
         body = self._good_response()
         body["instructions"]["contract_address"] = None
         respx.post(f"{BASE_URL}/v1/register").mock(return_value=httpx.Response(200, json=body))
-        async with Level5Client(base_url=BASE_URL) as client:
+        async with Level5Client(base_domain=BASE_DOMAIN) as client:
             with pytest.raises(Level5Error):
                 await client.register()
 
@@ -253,13 +254,21 @@ class TestBalanceFromHeaders:
 
 class TestProxyUrl:
     def test_get_api_base_url(self) -> None:
-        client = Level5Client(api_token="mytoken", base_url="https://api.level5.cloud")
+        client = Level5Client(api_token="mytoken", base_domain="level5.cloud")
         url = client.get_api_base_url()
         assert url == "https://api.level5.cloud/proxy/mytoken/v1"
+
+    def test_get_api_base_url_custom_domain(self) -> None:
+        client = Level5Client(api_token="mytoken", base_domain="usepod.ai")
+        assert client.get_api_base_url() == "https://api.usepod.ai/proxy/mytoken/v1"
 
     def test_get_dashboard_url(self) -> None:
         client = Level5Client(api_token="mytoken")
         assert client.get_dashboard_url() == "https://level5.cloud/dashboard/mytoken"
+
+    def test_get_dashboard_url_custom_domain(self) -> None:
+        client = Level5Client(api_token="mytoken", base_domain="usepod.ai")
+        assert client.get_dashboard_url() == "https://usepod.ai/dashboard/mytoken"
 
     def test_is_registered(self) -> None:
         assert Level5Client(api_token="tok").is_registered() is True
