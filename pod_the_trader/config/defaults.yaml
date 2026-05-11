@@ -17,11 +17,11 @@ level5:
 trading:
   target_token_address: "EN2nnxrg8uUi6x2sJkzNPd2eT6rB9rdSoQNNaENA4RZA"
   max_position_size_usdc: 100.0
-  max_slippage_bps: 50
+  max_slippage_bps: 150
   min_trade_size_usdc: 1.0
   max_daily_trades: 20
   cooldown_seconds: 300
-  max_price_impact_pct: 5.0
+  max_price_impact_pct: 1.5
 
 solana:
   # Primary RPC endpoint used for transactions and as the first read

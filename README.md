@@ -64,11 +64,11 @@ The knobs you'll care about most:
 |---|---|---|
 | `trading.target_token_address` | `EN2nn…SQUIRE` | The token the bot is trying to trade profitably. Can also be set via `TARGET_TOKEN_ADDRESS` env var. |
 | `trading.max_position_size_usdc` | `100` | Hard cap on position size, in USDC. |
-| `trading.max_slippage_bps` | `50` | Max Jupiter slippage tolerance, in basis points. |
+| `trading.max_slippage_bps` | `150` | Max Jupiter slippage tolerance, in basis points. |
 | `trading.min_trade_size_usdc` | `1.0` | Swaps below this USD value are rejected at the tool layer. Network fees would exceed the trade value. |
 | `trading.max_daily_trades` | `20` | Per-day safety cap. |
 | `trading.cooldown_seconds` | `300` | Seconds to wait between cycles. |
-| `trading.max_price_impact_pct` | `5.0` | Refuse swaps with worse Jupiter-reported price impact. |
+| `trading.max_price_impact_pct` | `1.5` | Refuse swaps with worse Jupiter-reported price impact. |
 | `level5.min_balance_threshold_usdc` | `0.1` | Pause trading when Level5 balance drops below this floor. |
 | `level5.base_domain` | `level5.cloud` | Host for the Level5 API (`api.<domain>`) and dashboard (`<domain>/dashboard/<token>`). Override on the command line with `--base-domain`. |
 | `agent.model` | `minimax-m2.7` | The LLM Level5 proxies to. |
