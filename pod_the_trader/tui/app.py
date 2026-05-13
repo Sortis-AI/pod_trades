@@ -87,7 +87,7 @@ class PodDashboardApp(App):
                     price_series=[("SOL", SOL_MINT), ("TARGET", self._target_mint)],
                     derived_series=[
                         ("RSI", "rsi", self._target_mint),
-                        ("IPP", "ipp", self._target_mint),
+                        ("BREAKEVEN", "ipp", self._target_mint),
                         ("VOL", "vol", self._target_mint),
                     ],
                     price_log=self._price_log,

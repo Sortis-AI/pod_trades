@@ -171,7 +171,8 @@ class MarketChartsWidget(Static):
         formatter: Callable[[float], str],
         annotator: Callable[[float], str] | None = None,
     ) -> None:
-        label_str = f"[b #00d4ff]{label:<7}[/]"
+        # Column width matches the longest label ("BREAKEVEN" = 9).
+        label_str = f"[b #00d4ff]{label:<9}[/]"
         if not values:
             lines.append(f"{label_str} [dim]collecting…[/]")
             return

@@ -131,7 +131,7 @@ On exit the bot prints a summary of the current session: closed trades, realized
                               Solana mainnet
 ```
 
-- **Agent** (`pod_the_trader/agent/core.py`) runs the cycle loop, builds the system prompt, enforces that BUY/SELL decisions are backed by an actual `execute_swap` call, and publishes events to a TUI publisher.
+- **Agent** (`pod_the_trader/agent/core.py`) runs the cycle loop, builds the system prompt, enforces that BUY/SELL decisions are backed by an actual `execute_swap` call, and publishes events to a TUI publisher. The prompt encodes a mean-reversion strategy keyed on the **Inference Payback Period (IPP)** — `500_000 × target_price_usd` ≈ days for $1/day of inference yield to repay the market price of 500,000 target tokens — with bands at IPP 180 / 365 / 500 mapping to BUY / NEUTRAL / HOLD-ONLY / TRIM regimes.
 - **Tools** (`pod_the_trader/tools/`) are the only way the model touches the world. Every swap entry point is gated by a route guard (SOL/USDC/target only) and a minimum-trade-size guard ($1 default).
 - **Lot ledger** (`pod_the_trader/data/lot_ledger.py`) is an event-sourced cost-basis ledger. FIFO matching produces closed segments with entry and exit prices; realized P&L falls out of those directly.
 - **Reconciler** (`pod_the_trader/data/reconciler.py`) compares ledger open-lot sum against the actual on-chain balance every cycle and at startup, and emits synthetic events to absorb any drift.
