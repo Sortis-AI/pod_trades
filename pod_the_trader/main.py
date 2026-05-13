@@ -273,6 +273,7 @@ async def async_main(
             quote_url=config.get("jupiter.quote_url"),
             swap_url=config.get("jupiter.swap_url"),
             price_url=config.get("jupiter.price_url"),
+            search_url=config.get("jupiter.search_url", "https://lite-api.jup.ag/tokens/v2/search"),
             rpc_url=rpc_url,
         ) as jupiter_dex:
             # 10. Portfolio
@@ -811,6 +812,7 @@ async def async_main_tui(
             quote_url=config.get("jupiter.quote_url"),
             swap_url=config.get("jupiter.swap_url"),
             price_url=config.get("jupiter.price_url"),
+            search_url=config.get("jupiter.search_url", "https://lite-api.jup.ag/tokens/v2/search"),
             rpc_url=rpc_url,
         ) as jupiter_dex:
             portfolio = Portfolio(

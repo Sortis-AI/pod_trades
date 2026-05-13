@@ -76,11 +76,13 @@ class JupiterDex:
         quote_url: str = "https://api.jup.ag/swap/v1",
         swap_url: str = "https://api.jup.ag/swap/v1",
         price_url: str = "https://lite-api.jup.ag/price/v3",
+        search_url: str = "https://lite-api.jup.ag/tokens/v2/search",
         rpc_url: str = "https://api.mainnet-beta.solana.com",
     ) -> None:
         self._quote_url = quote_url.rstrip("/")
         self._swap_url = swap_url.rstrip("/")
         self._price_url = price_url.rstrip("/")
+        self._search_url = search_url.rstrip("/")
         self._rpc_url = rpc_url
         self._http: httpx.AsyncClient | None = None
         self._tx_builder = TransactionBuilder(rpc_url)
@@ -211,6 +213,41 @@ class JupiterDex:
             raise JupiterError(f"No price data for {mint_address}")
         return float(token_data["usdPrice"])
 
+    async def get_token_stats(self, mint_address: str) -> dict[str, float]:
+        """Get price + liquidity for a token via Jupiter token search.
+
+        Returns ``{"price_usd": float, "liquidity_usd": float}``. The
+        search endpoint returns a list of token objects; we pick the one
+        whose ``id`` matches ``mint_address`` exactly so an ambiguous
+        symbol query never resolves to the wrong token.
+
+        Raises ``JupiterError`` if the mint is not present in the
+        response or required fields are missing.
+        """
+        data = await self._request_with_retry(
+            "GET",
+            self._search_url,
+            params={"query": mint_address},
+        )
+        # The search endpoint returns a list of matches.
+        if not isinstance(data, list):
+            raise JupiterError(
+                f"Unexpected search response shape for {mint_address}: {type(data).__name__}"
+            )
+        for token in data:
+            if token.get("id") == mint_address:
+                price = token.get("usdPrice")
+                if price is None:
+                    raise JupiterError(f"No usdPrice for {mint_address} in search response")
+                # Jupiter exposes liquidity under several keys depending on the
+                # token; "liquidity" is the canonical aggregate USD figure.
+                liquidity = token.get("liquidity", 0.0) or 0.0
+                return {
+                    "price_usd": float(price),
+                    "liquidity_usd": float(liquidity),
+                }
+        raise JupiterError(f"Mint {mint_address} not found in search response")
+
     async def check_feasibility(
         self,
         input_mint: str,
@@ -250,8 +287,13 @@ class JupiterDex:
         params: dict | None = None,
         json_data: dict | None = None,
         max_retries: int = 3,
-    ) -> dict:
-        """HTTP request with retry on failure."""
+    ) -> Any:
+        """HTTP request with retry on failure.
+
+        Returns whatever ``response.json()`` produces — Jupiter's various
+        endpoints return either an object (quote, price) or a list
+        (search), so callers must know what shape they're expecting.
+        """
         last_error: Exception | None = None
 
         for attempt in range(max_retries):

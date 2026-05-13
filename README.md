@@ -69,6 +69,7 @@ The knobs you'll care about most:
 | `trading.max_daily_trades` | `20` | Per-day safety cap. |
 | `trading.cooldown_seconds` | `300` | Seconds to wait between cycles. |
 | `trading.max_price_impact_pct` | `1.5` | Refuse swaps with worse Jupiter-reported price impact. |
+| `trading.fallback_slice_usdc` | `25.0` | Slice size used when Jupiter doesn't report `liquidity_usd` on the latest tick. Prevents the `min($150, 0.015 * liquidity_usd)` sizing rule from collapsing to `$0` and silently blocking trades. |
 | `level5.min_balance_threshold_usdc` | `0.1` | Pause trading when Level5 balance drops below this floor. |
 | `level5.base_domain` | `level5.cloud` | Host for the Level5 API (`api.<domain>`) and dashboard (`<domain>/dashboard/<token>`). Override on the command line with `--base-domain`. |
 | `agent.model` | `minimax-m2.7` | The LLM Level5 proxies to. |

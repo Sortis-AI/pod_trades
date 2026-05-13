@@ -22,6 +22,11 @@ trading:
   max_daily_trades: 20
   cooldown_seconds: 300
   max_price_impact_pct: 1.5
+  # Slice size used when Jupiter doesn't report liquidity_usd on the
+  # latest price tick (Section D fallback in the agent system prompt).
+  # Keep it conservative — this fires only when depth data is missing,
+  # not when the token genuinely has thin liquidity.
+  fallback_slice_usdc: 25.0
 
 solana:
   # Primary RPC endpoint used for transactions and as the first read
@@ -42,6 +47,10 @@ jupiter:
   quote_url: "https://api.jup.ag/swap/v1"
   price_url: "https://lite-api.jup.ag/price/v3"
   swap_url: "https://api.jup.ag/swap/v1"
+  # Token search endpoint — returns price + liquidity + metadata for a
+  # mint. Used by `_sample_prices` so each tick carries a real
+  # liquidity_usd figure for Section D sizing.
+  search_url: "https://lite-api.jup.ag/tokens/v2/search"
 
 polling:
   funding_interval_seconds: 10

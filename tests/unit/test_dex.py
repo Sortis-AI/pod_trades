@@ -11,8 +11,10 @@ from pod_the_trader.trading.dex import JupiterDex, JupiterError, SwapQuote
 
 QUOTE_URL = "https://api.jup.ag/swap/v1"
 PRICE_URL = "https://lite-api.jup.ag/price/v3"
+SEARCH_URL = "https://lite-api.jup.ag/tokens/v2/search"
 SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+TARGET_MINT = "EN2nnxrg8uUi6x2sJkzNPd2eT6rB9rdSoQNNaENA4RZA"
 
 
 @pytest.fixture()
@@ -21,6 +23,7 @@ async def dex():
         quote_url=QUOTE_URL,
         swap_url=QUOTE_URL,
         price_url=PRICE_URL,
+        search_url=SEARCH_URL,
         rpc_url="https://api.devnet.solana.com",
     ) as d:
         yield d
@@ -133,6 +136,105 @@ class TestGetTokenPrice:
         respx.get(PRICE_URL).mock(return_value=httpx.Response(200, json={}))
         with pytest.raises(JupiterError, match="No price data"):
             await dex.get_token_price(SOL_MINT)
+
+
+class TestGetTokenStats:
+    @respx.mock
+    async def test_returns_price_and_liquidity(self, dex: JupiterDex) -> None:
+        respx.get(SEARCH_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": TARGET_MINT,
+                        "symbol": "SQUIRE",
+                        "usdPrice": 0.000654,
+                        "liquidity": 42000.5,
+                    }
+                ],
+            )
+        )
+        stats = await dex.get_token_stats(TARGET_MINT)
+        assert stats == {"price_usd": 0.000654, "liquidity_usd": 42000.5}
+
+    @respx.mock
+    async def test_picks_matching_id_from_multiple_results(self, dex: JupiterDex) -> None:
+        # The search endpoint can return multiple tokens matching the query
+        # string (symbol fuzzy match). We must pick the one whose `id`
+        # exactly matches the requested mint, not the first result.
+        respx.get(SEARCH_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "WRONG1111111111111111111111111111111111111",
+                        "usdPrice": 99.0,
+                        "liquidity": 1.0,
+                    },
+                    {"id": TARGET_MINT, "usdPrice": 0.001, "liquidity": 5000.0},
+                    {
+                        "id": "WRONG2222222222222222222222222222222222222",
+                        "usdPrice": 99.0,
+                        "liquidity": 1.0,
+                    },
+                ],
+            )
+        )
+        stats = await dex.get_token_stats(TARGET_MINT)
+        assert stats["price_usd"] == 0.001
+        assert stats["liquidity_usd"] == 5000.0
+
+    @respx.mock
+    async def test_missing_liquidity_defaults_to_zero(self, dex: JupiterDex) -> None:
+        respx.get(SEARCH_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=[{"id": TARGET_MINT, "usdPrice": 0.001}],
+            )
+        )
+        stats = await dex.get_token_stats(TARGET_MINT)
+        assert stats["liquidity_usd"] == 0.0
+
+    @respx.mock
+    async def test_null_liquidity_defaults_to_zero(self, dex: JupiterDex) -> None:
+        # Jupiter has been observed returning explicit null for tokens
+        # without aggregated liquidity data — must not crash on float(None).
+        respx.get(SEARCH_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=[{"id": TARGET_MINT, "usdPrice": 0.001, "liquidity": None}],
+            )
+        )
+        stats = await dex.get_token_stats(TARGET_MINT)
+        assert stats["liquidity_usd"] == 0.0
+
+    @respx.mock
+    async def test_raises_when_mint_not_in_results(self, dex: JupiterDex) -> None:
+        respx.get(SEARCH_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=[{"id": "WRONG1111111111111111111111111111111111111", "usdPrice": 99.0}],
+            )
+        )
+        with pytest.raises(JupiterError, match="not found"):
+            await dex.get_token_stats(TARGET_MINT)
+
+    @respx.mock
+    async def test_raises_on_empty_results(self, dex: JupiterDex) -> None:
+        respx.get(SEARCH_URL).mock(return_value=httpx.Response(200, json=[]))
+        with pytest.raises(JupiterError, match="not found"):
+            await dex.get_token_stats(TARGET_MINT)
+
+    @respx.mock
+    async def test_raises_on_missing_price(self, dex: JupiterDex) -> None:
+        respx.get(SEARCH_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=[{"id": TARGET_MINT, "liquidity": 5000.0}],
+            )
+        )
+        with pytest.raises(JupiterError, match="No usdPrice"):
+            await dex.get_token_stats(TARGET_MINT)
 
 
 class TestCheckFeasibility:

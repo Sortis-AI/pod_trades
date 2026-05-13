@@ -367,6 +367,21 @@ class TradingAgent:
             parts.append(f"\nMax position size: ${max_pos} USDC")
             parts.append(f"Max slippage: {self._config.get('trading.max_slippage_bps')} bps")
 
+        # Section D fallback: when the upstream price feed doesn't report
+        # liquidity (some Jupiter responses omit it), the formula
+        # `min($150, 0.015 * 0)` collapses to $0 and no trade fits the $1
+        # minimum. Give the model an explicit escape hatch so a missing
+        # field doesn't silently veto every buy in the BUY band.
+        fallback_slice = self._config.get("trading.fallback_slice_usdc", 25.0)
+        parts.append(
+            f"\nSECTION D FALLBACK: If the most recent tick of "
+            f"get_price_history reports liquidity_usd = 0 or null, use a "
+            f"slice size of ${fallback_slice} USDC instead of the "
+            f"`min($150, 0.015 * liquidity_usd)` formula. This handles "
+            f"the case where the upstream price feed lacks liquidity "
+            f"data; do NOT let a zero reading silently block trading."
+        )
+
         parts.append(
             "\nTRADEABLE UNIVERSE: ONLY SOL, USDC, and the TARGET TOKEN above. "
             "Every swap MUST have one of these three mints on each side. The "
@@ -987,28 +1002,71 @@ class TradingAgent:
             self._publisher.on_portfolio_snapshot(snapshot)
 
     async def _sample_prices(self) -> None:
-        """Append a price tick for SOL + target token to the price log."""
+        """Append a price tick for SOL + target token to the price log.
+
+        For the target token we fetch price + liquidity in one call to the
+        Jupiter search endpoint so the strategy can size trades against
+        real on-chain depth (Section D of the system prompt). For SOL we
+        only need price; liquidity is not used in sizing decisions.
+
+        If the stats fetch fails for the target, fall back to a
+        price-only sample so the RSI/volatility series stays gap-free —
+        liquidity_usd will be 0 for that tick and the model's Section-D
+        fallback rule will use the configured slice size instead.
+        """
         if self._price_log is None or self._dex is None:
             return
 
         target = self._config.get("trading.target_token_address", "")
-        mints = [SOL_MINT]
-        if target and target != SOL_MINT:
-            mints.append(target)
 
-        for mint in mints:
-            try:
-                price = await self._dex.get_token_price(mint)
-                tick = PriceTick(
+        # SOL: price only.
+        try:
+            sol_price = await self._dex.get_token_price(SOL_MINT)
+            self._price_log.append(
+                PriceTick(
                     timestamp=now_iso(),
-                    mint=mint,
-                    symbol="SOL" if mint == SOL_MINT else "",
-                    price_usd=price,
-                    source="jupiter_v3",
+                    mint=SOL_MINT,
+                    symbol="SOL",
+                    price_usd=sol_price,
+                    source="jupiter_price_v3",
                 )
-                self._price_log.append(tick)
-            except Exception as e:
-                logger.debug("Failed to sample price for %s: %s", mint[:12], e)
+            )
+        except Exception as e:
+            logger.debug("Failed to sample SOL price: %s", e)
+
+        # Target token: price + liquidity in one call.
+        if not target or target == SOL_MINT:
+            return
+        try:
+            stats = await self._dex.get_token_stats(target)
+            self._price_log.append(
+                PriceTick(
+                    timestamp=now_iso(),
+                    mint=target,
+                    symbol="",
+                    price_usd=stats["price_usd"],
+                    liquidity_usd=stats["liquidity_usd"],
+                    source="jupiter_search_v2",
+                )
+            )
+        except Exception as e:
+            logger.warning(
+                "Target token stats fetch failed (%s); falling back to price-only sample",
+                e,
+            )
+            try:
+                price = await self._dex.get_token_price(target)
+                self._price_log.append(
+                    PriceTick(
+                        timestamp=now_iso(),
+                        mint=target,
+                        symbol="",
+                        price_usd=price,
+                        source="jupiter_price_v3",
+                    )
+                )
+            except Exception as e2:
+                logger.debug("Target token price fallback also failed: %s", e2)
 
     async def _sample_wallet(self) -> None:
         """Snapshot on-chain wallet balances and reconcile against the lot ledger.
