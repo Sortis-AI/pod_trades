@@ -17,13 +17,13 @@ from pod_the_trader.data.ledger import TradeLedger
 from pod_the_trader.data.price_log import PriceLog
 from pod_the_trader.trading.dex import SOL_MINT
 
+from .widgets.charts import MarketChartsWidget
 from .widgets.cycle_status import CycleStatusWidget
 from .widgets.health import HealthWidget
 from .widgets.ledger import LedgerWidget
 from .widgets.level5 import Level5Widget
 from .widgets.log_tail import LogTailHandler, LogTailWidget
 from .widgets.portfolio import PortfolioWidget
-from .widgets.prices import PriceActionWidget
 
 if TYPE_CHECKING:
     from pod_the_trader.data.lot_ledger import LotLedger
@@ -82,12 +82,17 @@ class PodDashboardApp(App):
                 yield HealthWidget(classes="panel", id="health")
                 yield LedgerWidget(self._ledger, classes="panel", id="ledger")
             with Container(id="row-mid", classes="row"):
-                yield PriceActionWidget(
-                    "Price Action",
-                    [("SOL", SOL_MINT), ("TARGET", self._target_mint)],
-                    self._price_log,
+                yield MarketChartsWidget(
+                    "Market Charts",
+                    price_series=[("SOL", SOL_MINT), ("TARGET", self._target_mint)],
+                    derived_series=[
+                        ("RSI", "rsi", self._target_mint),
+                        ("IPP", "ipp", self._target_mint),
+                        ("VOL", "vol", self._target_mint),
+                    ],
+                    price_log=self._price_log,
                     classes="panel",
-                    id="price-action",
+                    id="market-charts",
                 )
                 yield Level5Widget(classes="panel", id="level5")
             with Container(id="row-bot", classes="row"):
@@ -175,7 +180,9 @@ class PodDashboardApp(App):
             portfolio.target_symbol = symbol
             portfolio.wallet_address = wallet
         with contextlib.suppress(Exception):
-            self.query_one("#price-action", PriceActionWidget).set_label(self._target_mint, symbol)
+            self.query_one("#market-charts", MarketChartsWidget).set_label(
+                self._target_mint, symbol
+            )
         with contextlib.suppress(Exception):
             level5 = self.query_one("#level5", Level5Widget)
             level5.model = model
@@ -205,7 +212,7 @@ class PodDashboardApp(App):
 
         # Refresh sparklines from the price log.
         with contextlib.suppress(Exception):
-            self.query_one("#price-action", PriceActionWidget).refresh_data()
+            self.query_one("#market-charts", MarketChartsWidget).refresh_data()
 
         # Update header with latest decision.
         decision = summary.get("decision", "")
@@ -226,7 +233,7 @@ class PodDashboardApp(App):
     def on_price_tick(self, mint: str, price_usd: float, timestamp: str) -> None:
         if mint in (SOL_MINT, self._target_mint):
             with contextlib.suppress(Exception):
-                self.query_one("#price-action", PriceActionWidget).refresh_data()
+                self.query_one("#market-charts", MarketChartsWidget).refresh_data()
 
     def on_portfolio_snapshot(self, snapshot: dict[str, Any]) -> None:
         self.query_one("#portfolio", PortfolioWidget).snapshot = snapshot

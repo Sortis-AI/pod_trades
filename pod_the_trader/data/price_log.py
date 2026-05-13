@@ -125,6 +125,66 @@ class PriceLog:
         var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
         return var**0.5
 
+    def rsi_series(self, mint: str, period: int = 12) -> list[float]:
+        """Simple-moving-average RSI series over a rolling window.
+
+        Produces one RSI value per tick starting at index ``period``,
+        using the last ``period`` price deltas. Returns an empty list
+        if there are fewer than ``period + 1`` valid prices.
+
+        Period 12 matches the strategy prompt's RSI window.
+        """
+        ticks = self.read_for_mint(mint)
+        prices = [t.price_usd for t in ticks if t.price_usd > 0]
+        if len(prices) < period + 1:
+            return []
+        rsis: list[float] = []
+        for end in range(period, len(prices)):
+            window = prices[end - period : end + 1]
+            gains = 0.0
+            losses = 0.0
+            for i in range(1, len(window)):
+                change = window[i] - window[i - 1]
+                if change > 0:
+                    gains += change
+                elif change < 0:
+                    losses += -change
+            avg_gain = gains / period
+            avg_loss = losses / period
+            if avg_loss == 0:
+                # All-up window: RSI saturates at 100. Flat window
+                # (no gains, no losses) is conventionally reported as 50.
+                rsis.append(100.0 if avg_gain > 0 else 50.0)
+            else:
+                rs = avg_gain / avg_loss
+                rsis.append(100.0 - (100.0 / (1.0 + rs)))
+        return rsis
+
+    def rolling_volatility_series(self, mint: str, window: int = 12) -> list[float]:
+        """Rolling sample stdev of log returns over ``window`` periods.
+
+        Produces one volatility value per tick starting at index
+        ``window``, using the last ``window`` log returns. Returns an
+        empty list if there are fewer than ``window + 1`` valid prices.
+
+        Window 12 matches the strategy prompt's RSI window so the two
+        derived series share a horizon.
+        """
+        import math
+
+        ticks = self.read_for_mint(mint)
+        prices = [t.price_usd for t in ticks if t.price_usd > 0]
+        if len(prices) < window + 1:
+            return []
+        log_returns = [math.log(prices[i] / prices[i - 1]) for i in range(1, len(prices))]
+        vols: list[float] = []
+        for end in range(window, len(log_returns) + 1):
+            window_returns = log_returns[end - window : end]
+            mean = sum(window_returns) / window
+            var = sum((r - mean) ** 2 for r in window_returns) / (window - 1)
+            vols.append(var**0.5)
+        return vols
+
     def __len__(self) -> int:
         return len(self.read_all())
 

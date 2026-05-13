@@ -9,7 +9,7 @@ An autonomous Solana trading agent. An LLM makes live buy/sell decisions on a si
 - **Runs a cycle every N seconds.** Each cycle fetches on-chain balances, recent price history, and trade history, hands them to an LLM, and records the model's decision (BUY, SELL, or HOLD) along with the reason.
 - **Executes real swaps** through Jupiter DEX aggregator. SOL, USDC, and one configured target token are the only mints it can touch — a tool-layer guard rejects anything else.
 - **Tracks cost basis** in a lot-based ledger. Every position change (bot trade, external deposit, external withdrawal, gas) is a cost-basis event; realized and unrealized P&L come from FIFO lot matching instead of volume math. A reconciler runs before every cycle and at startup to absorb any on-chain drift the bot didn't cause.
-- **Shows it all live** in a 3×3 Textual grid: Portfolio, Health (P&L gauge), Trade ledger, Price Action (SOL + target sparklines), Level5 Billing (inference cost), Cycle status, and a scrollable log tail.
+- **Shows it all live** in a 3×3 Textual grid: Portfolio, Health (P&L gauge), Trade ledger, Market Charts (SOL/target price plus RSI / IPP / rolling-volatility sparklines for the target token), Level5 Billing (inference cost), Cycle status, and a scrollable log tail.
 - **Bills its own inference** through [Level5](https://level5.cloud) — a Solana-native pay-as-you-go LLM proxy. You fund a Level5 account once with USDC and the bot draws from it per request.
 
 ## Quick install

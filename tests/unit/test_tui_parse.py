@@ -11,6 +11,7 @@ def test_tui_module_imports() -> None:
     import pod_the_trader.tui.app
     import pod_the_trader.tui.publisher
     import pod_the_trader.tui.widgets
+    import pod_the_trader.tui.widgets.charts
     import pod_the_trader.tui.widgets.cycle_status
     import pod_the_trader.tui.widgets.health
     import pod_the_trader.tui.widgets.ledger
@@ -18,7 +19,6 @@ def test_tui_module_imports() -> None:
     import pod_the_trader.tui.widgets.log_tail
     import pod_the_trader.tui.widgets.pod_logo
     import pod_the_trader.tui.widgets.portfolio
-    import pod_the_trader.tui.widgets.prices
 
     # Just ensure the modules are real.
     assert pod_the_trader.tui.app.PodDashboardApp is not None

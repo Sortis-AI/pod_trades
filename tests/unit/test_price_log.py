@@ -84,3 +84,67 @@ class TestQuantMetrics:
             log.append(_tick("SOL", p))
         vol = log.volatility("SOL")
         assert vol > 0
+
+
+class TestRsiSeries:
+    def test_returns_empty_with_insufficient_data(self, log: PriceLog) -> None:
+        for p in (100.0, 101.0, 102.0):
+            log.append(_tick("SOL", p))
+        # Need period + 1 = 13 prices for period=12 default
+        assert log.rsi_series("SOL") == []
+
+    def test_emits_one_value_per_tick_past_window(self, log: PriceLog) -> None:
+        # 15 prices, period=12 → 3 RSI values (indices 12, 13, 14)
+        prices = [100.0 + i for i in range(15)]
+        for p in prices:
+            log.append(_tick("SOL", p))
+        series = log.rsi_series("SOL", period=12)
+        assert len(series) == 3
+
+    def test_all_up_window_saturates_at_100(self, log: PriceLog) -> None:
+        for p in range(100, 115):  # 15 strictly increasing prices
+            log.append(_tick("SOL", float(p)))
+        series = log.rsi_series("SOL", period=12)
+        assert series[-1] == 100.0
+
+    def test_flat_window_reports_50(self, log: PriceLog) -> None:
+        for _ in range(15):
+            log.append(_tick("SOL", 100.0))
+        series = log.rsi_series("SOL", period=12)
+        assert series[-1] == 50.0
+
+    def test_value_in_expected_range(self, log: PriceLog) -> None:
+        # Mixed gains and losses → RSI strictly between 0 and 100
+        for p in (100, 102, 99, 101, 98, 103, 97, 104, 96, 105, 95, 106, 94):
+            log.append(_tick("SOL", float(p)))
+        series = log.rsi_series("SOL", period=12)
+        assert len(series) == 1
+        assert 0 < series[0] < 100
+
+
+class TestRollingVolatilitySeries:
+    def test_returns_empty_with_insufficient_data(self, log: PriceLog) -> None:
+        for p in (100.0, 101.0, 102.0):
+            log.append(_tick("SOL", p))
+        # window=12 default needs 13 prices
+        assert log.rolling_volatility_series("SOL") == []
+
+    def test_emits_one_value_per_tick_past_window(self, log: PriceLog) -> None:
+        # 15 prices, window=12 → 3 vol values
+        prices = [100.0 + i * 0.5 for i in range(15)]
+        for p in prices:
+            log.append(_tick("SOL", p))
+        series = log.rolling_volatility_series("SOL", window=12)
+        assert len(series) == 3
+
+    def test_constant_prices_yield_zero(self, log: PriceLog) -> None:
+        for _ in range(15):
+            log.append(_tick("SOL", 100.0))
+        series = log.rolling_volatility_series("SOL", window=12)
+        assert series[-1] == 0.0
+
+    def test_volatile_prices_yield_positive(self, log: PriceLog) -> None:
+        for p in (100, 110, 90, 105, 95, 108, 92, 106, 94, 107, 93, 109, 91):
+            log.append(_tick("SOL", float(p)))
+        series = log.rolling_volatility_series("SOL", window=12)
+        assert series[-1] > 0
