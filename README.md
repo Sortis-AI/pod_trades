@@ -10,7 +10,7 @@ An autonomous Solana trading agent. An LLM makes live buy/sell decisions on a si
 - **Executes real swaps** through Jupiter DEX aggregator. SOL, USDC, and one configured target token are the only mints it can touch — a tool-layer guard rejects anything else.
 - **Tracks cost basis** in a lot-based ledger. Every position change (bot trade, external deposit, external withdrawal, gas) is a cost-basis event; realized and unrealized P&L come from FIFO lot matching instead of volume math. A reconciler runs before every cycle and at startup to absorb any on-chain drift the bot didn't cause.
 - **Shows it all live** in a 3×3 Textual grid: Portfolio, Health (P&L gauge), Trade ledger, Market Charts (SOL/target price plus RSI / IPP / rolling-volatility sparklines for the target token), Level5 Billing (inference cost), Cycle status, and a scrollable log tail.
-- **Bills its own inference** through [Level5](https://level5.cloud) — a Solana-native pay-as-you-go LLM proxy. You fund a Level5 account once with USDC and the bot draws from it per request.
+- **Bills its own inference** through your choice of [Level5](https://level5.cloud) or [UsePod](https://usepod.ai) — two API-compatible Solana-native pay-as-you-go LLM proxies. You fund the account once with USDC and the bot draws from it per request. Pick a provider with `--provider {level5,usepod}` at startup (or via the `provider` config key); the bot remembers your choice in the saved credentials file.
 
 ## Quick install
 
@@ -47,8 +47,24 @@ To upgrade later, run `pod-the-trader update` — it pulls the latest code and r
 - **OS:** Linux, macOS, or Windows 10/11. On Windows, use PowerShell inside Windows Terminal — legacy `cmd.exe` cannot render the Textual dashboard.
 - **Python:** 3.12+
 - **Wallet:** a Solana keypair. The installer can generate one for you on first run; the private key lives at `~/.pod_the_trader/keypair.json` (`%USERPROFILE%\.pod_the_trader\keypair.json` on Windows) and is never transmitted.
-- **Level5 account:** the installer walks you through creating one. Fund it with USDC (or use whatever promotional credits Level5 issues) — the bot refuses to trade when the balance falls below a configured floor.
+- **Provider account (Level5 or UsePod):** the installer walks you through creating one. Pick whichever provider you prefer (`--provider level5` or `--provider usepod`) and fund it with USDC. Level5 also issues promotional credits in some campaigns; UsePod is USDC-only. The bot refuses to trade when the balance falls below a configured floor.
 - **Some SOL** in your trading wallet to cover Jupiter gas.
+
+## Choosing a provider
+
+Both providers expose a byte-identical API surface (UsePod is a Rust port of Level5), so the only operator-facing differences are:
+
+- **Default model name.** Level5 has its own catalog (e.g. `minimax-m2.7`); UsePod proxies OpenAI/Anthropic-shaped names (e.g. `claude-sonnet-4-6`, `gpt-5.3-codex`). Update `agent.model` in your config when you switch.
+- **Credits.** Level5 supports promotional credits separate from USDC; UsePod is USDC-only. The dashboard hides the Credits row automatically when UsePod is active.
+- **Dashboard URL.** Level5 uses `https://level5.cloud/dashboard/<token>`; UsePod uses `https://usepod.ai/dashboard?token=<token>`.
+
+You can pick a provider three ways, listed in increasing precedence:
+
+1. **Config file** — set `provider: "usepod"` at the top of your YAML.
+2. **CLI flag** — `pod-the-trader --provider usepod` (overrides config).
+3. **Env-skipped onboarding** — set `LEVEL5_API_TOKEN` *or* `USEPOD_API_TOKEN`. The wizard reads only the active provider's variable; cross-pairs are ignored.
+
+The first time you launch, the wizard asks you to pick a provider then offers register / paste-token / skip. The choice is saved in `~/.pod_the_trader/level5_credentials.json` (filename kept for backward compatibility) along with the provider key, so subsequent launches don't re-prompt.
 
 ## Configuration
 
@@ -70,9 +86,12 @@ The knobs you'll care about most:
 | `trading.cooldown_seconds` | `300` | Seconds to wait between cycles. |
 | `trading.max_price_impact_pct` | `1.5` | Refuse swaps with worse Jupiter-reported price impact. |
 | `trading.fallback_slice_usdc` | `25.0` | Slice size used when Jupiter doesn't report `liquidity_usd` on the latest tick. Prevents the `min($150, 0.015 * liquidity_usd)` sizing rule from collapsing to `$0` and silently blocking trades. |
+| `provider` | `level5` | Active LLM-proxy provider. One of `level5` or `usepod`. Override at startup with `--provider`. |
 | `level5.min_balance_threshold_usdc` | `0.1` | Pause trading when Level5 balance drops below this floor. |
 | `level5.base_domain` | `level5.cloud` | Host for the Level5 API (`api.<domain>`) and dashboard (`<domain>/dashboard/<token>`). Override on the command line with `--base-domain`. |
-| `agent.model` | `minimax-m2.7` | The LLM Level5 proxies to. |
+| `usepod.min_balance_threshold_usdc` | `0.1` | Pause trading when UsePod balance drops below this floor. |
+| `usepod.base_domain` | `usepod.ai` | Host for the UsePod API and dashboard (UsePod uses `<domain>/dashboard?token=<token>`). |
+| `agent.model` | `minimax-m2.7` | The LLM the active provider proxies to. UsePod expects OpenAI/Anthropic-shaped names like `claude-sonnet-4-6` or `gpt-5.3-codex`; Level5 has its own model catalog. Change this when you switch providers. |
 | `agent.max_iterations_per_turn` | `10` | Max tool-call iterations per cycle. |
 
 ## Usage
@@ -90,8 +109,12 @@ pod-the-trader --tui
 # Custom config
 pod-the-trader --config path/to/config.yaml
 
-# Point at an alternate Level5 deployment (default: level5.cloud)
-pod-the-trader --base-domain usepod.ai
+# Choose an LLM-proxy provider (default: level5)
+pod-the-trader --provider usepod
+
+# Point at an alternate deployment host (host-only override; useful for
+# self-hosted Level5-compatible deployments).
+pod-the-trader --base-domain alt.example.com
 
 # Pull the latest code and re-sync dependencies
 pod-the-trader update

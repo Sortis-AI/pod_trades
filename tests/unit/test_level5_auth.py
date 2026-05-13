@@ -61,3 +61,54 @@ class TestCredentialPersistence:
         assert loaded.api_token == "minimal"
         assert loaded.deposit_address is None
         assert loaded.is_new is False
+        # Default provider must be Level5 so credentials predating
+        # provider support still resolve to a working configuration.
+        assert loaded.provider == "level5"
+
+    def test_provider_round_trips(self, auth: Level5Auth) -> None:
+        creds = Level5Credentials(api_token="tok", provider="usepod")
+        auth.save(creds)
+        loaded = auth.load()
+        assert loaded is not None
+        assert loaded.provider == "usepod"
+
+    def test_legacy_file_without_provider_loads_as_level5(self, auth: Level5Auth) -> None:
+        # Simulate a credentials file written before the provider field
+        # existed. The dataclass default must fill in for the missing key.
+        import json
+
+        auth._storage_dir.mkdir(parents=True, exist_ok=True)
+        auth._creds_path.write_text(
+            json.dumps(
+                {
+                    "api_token": "legacy_token",
+                    "deposit_address": "Addr",
+                    "is_new": False,
+                    # Note: no "provider" key.
+                }
+            )
+        )
+        loaded = auth.load()
+        assert loaded is not None
+        assert loaded.api_token == "legacy_token"
+        assert loaded.provider == "level5"
+
+    def test_load_drops_unknown_keys(self, auth: Level5Auth) -> None:
+        # The known-set filter must still drop foreign keys so a
+        # forward-looking file (e.g. one written by a future version)
+        # still loads without raising TypeError on __init__.
+        import json
+
+        auth._storage_dir.mkdir(parents=True, exist_ok=True)
+        auth._creds_path.write_text(
+            json.dumps(
+                {
+                    "api_token": "tok",
+                    "provider": "level5",
+                    "future_field": "ignored",
+                }
+            )
+        )
+        loaded = auth.load()
+        assert loaded is not None
+        assert loaded.api_token == "tok"

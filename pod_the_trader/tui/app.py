@@ -181,6 +181,8 @@ class PodDashboardApp(App):
         cooldown: int,
         dashboard_url: str = "",
         ledger_summary: dict[str, Any] | None = None,
+        provider_display: str = "Level5",
+        show_credits: bool = True,
     ) -> None:
         short_wallet = wallet[:6] + "…" + wallet[-4:] if len(wallet) > 12 else wallet
         symbol = target_symbol or "TARGET"
@@ -202,6 +204,8 @@ class PodDashboardApp(App):
             )
         with contextlib.suppress(Exception):
             level5 = self.query_one("#level5", Level5Widget)
+            level5.provider_display = provider_display
+            level5.show_credits = show_credits
             level5.model = model
             if dashboard_url:
                 level5.dashboard_url = dashboard_url

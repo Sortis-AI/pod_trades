@@ -8,6 +8,8 @@ from typing import Any
 
 import httpx
 
+from pod_the_trader.level5.provider import ProviderConfig, resolve_provider
+
 logger = logging.getLogger(__name__)
 
 _TOKEN_PATTERN = re.compile(r"(/proxy/|/dashboard/)([a-zA-Z0-9_-]{9,})(/|$)")
@@ -68,12 +70,17 @@ class Level5Client:
         api_token: str | None = None,
         deposit_address: str | None = None,
         base_domain: str = "level5.cloud",
+        provider: ProviderConfig | None = None,
     ) -> None:
         self._api_token = api_token
         self._deposit_address = deposit_address
         self._base_domain = base_domain.strip().strip("/")
         self._base_url = f"https://api.{self._base_domain}"
         self._dashboard_base = f"https://{self._base_domain}"
+        # Default to Level5 when no provider is passed so legacy call
+        # sites keep working. The provider only affects dashboard URL
+        # shape — the wire protocol is identical across providers.
+        self._provider = provider or resolve_provider(None)
         self._http: httpx.AsyncClient | None = None
         self._last_balance_usdc: float | None = None
         # Split between deposited USDC and promotional credits — both in
@@ -243,8 +250,24 @@ class Level5Client:
         return f"{self._base_url}/proxy/{self._api_token}/v1"
 
     def get_dashboard_url(self) -> str:
-        """Return the Level5 dashboard URL for this account."""
-        return f"{self._dashboard_base}/dashboard/{self._api_token}"
+        """Return the provider's dashboard URL for this account.
+
+        URL shape comes from ``ProviderConfig.dashboard_url_template``:
+        Level5 uses ``/dashboard/{token}`` (path) and UsePod uses
+        ``/dashboard?token={token}`` (query). This builder is the
+        fallback for manually-pasted tokens; the register endpoint
+        returns the canonical URL in its response and we store that
+        verbatim on the credentials record.
+        """
+        return self._provider.dashboard_url_template.format(
+            domain=self._base_domain,
+            token=self._api_token,
+        )
+
+    @property
+    def provider(self) -> ProviderConfig:
+        """Active provider config (read-only)."""
+        return self._provider
 
     def is_registered(self) -> bool:
         """Check if we have a valid API token."""

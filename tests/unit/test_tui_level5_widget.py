@@ -172,3 +172,75 @@ class TestSessionSpendAccounting:
 
             assert app.widget._session_start_usdc == baseline_usdc
             assert app.widget._session_start_credit == baseline_credit
+
+
+class TestProviderAwareRendering:
+    async def test_default_renders_level5_title_with_credits(self) -> None:
+        app = _Level5Harness()
+        async with app.run_test() as pilot:
+            app.widget.usdc = 5.0
+            app.widget.credit = 2.0
+            await pilot.pause()
+            rendered = str(app.widget.render())
+            assert "Level5 Billing" in rendered
+            assert "Credits" in rendered
+            # Session line contains both segments by default.
+            assert "credits" in rendered
+
+    async def test_provider_display_swaps_title(self) -> None:
+        app = _Level5Harness()
+        async with app.run_test() as pilot:
+            app.widget.provider_display = "UsePod"
+            app.widget.usdc = 5.0
+            await pilot.pause()
+            rendered = str(app.widget.render())
+            assert "UsePod Billing" in rendered
+            assert "Level5 Billing" not in rendered
+
+    async def test_show_credits_false_hides_credit_row(self) -> None:
+        app = _Level5Harness()
+        async with app.run_test() as pilot:
+            app.widget.provider_display = "UsePod"
+            app.widget.show_credits = False
+            app.widget.usdc = 5.0
+            app.widget.credit = 0.0
+            await pilot.pause()
+            rendered = str(app.widget.render())
+            # No Credits row.
+            assert "Credits" not in rendered
+            # No "Total:" header either (no second balance to combine).
+            assert "Total:" not in rendered
+            # Session line shows only the usdc segment, not the credits one.
+            assert "Session:" in rendered
+            assert "credits" not in rendered
+
+    async def test_show_credits_false_session_drain_usdc_only(self) -> None:
+        app = _Level5Harness()
+        async with app.run_test() as pilot:
+            app.widget.provider_display = "UsePod"
+            app.widget.show_credits = False
+            app.widget.usdc = 6.0
+            app.widget.credit = 0.0
+            await pilot.pause()
+
+            app.widget.usdc = 5.5
+            await pilot.pause()
+
+            rendered = str(app.widget.render())
+            # 0.5 USDC spent, no credit segment in the rendered line.
+            assert "$0.500000" in rendered
+            assert "credits" not in rendered
+
+    async def test_show_credits_true_keeps_credit_row(self) -> None:
+        # Explicit positive control matching the existing default but
+        # exercised through the new reactive so a refactor that breaks
+        # the toggle is caught.
+        app = _Level5Harness()
+        async with app.run_test() as pilot:
+            app.widget.show_credits = True
+            app.widget.usdc = 3.0
+            app.widget.credit = 1.0
+            await pilot.pause()
+            rendered = str(app.widget.render())
+            assert "Credits" in rendered
+            assert "Total:" in rendered

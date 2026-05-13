@@ -23,6 +23,7 @@ from pod_the_trader.data.wallet_log import WalletLog, WalletSnapshot
 from pod_the_trader.level5.auth import Level5Auth
 from pod_the_trader.level5.client import Level5Client, Level5Error
 from pod_the_trader.level5.poller import BalancePoller, FundingOrchestrator
+from pod_the_trader.level5.provider import ProviderConfig, resolve_provider
 from pod_the_trader.tools import create_registry
 from pod_the_trader.trading.dex import SOL_MINT, USDC_MINT, JupiterDex
 from pod_the_trader.trading.portfolio import Portfolio
@@ -103,6 +104,7 @@ def _configure_logging(config: Config, *, console: bool = True) -> None:
 
 def _print_post_registration_instructions(
     *,
+    provider_display: str,
     dashboard_url: str,
     contract: str,
     deposit_code: str,
@@ -110,18 +112,18 @@ def _print_post_registration_instructions(
     wallet_address: str,
 ) -> None:
     """Print the operator instructions immediately after a successful
-    Level5 registration. Must be called in both CLI and TUI paths so
+    provider registration. Must be called in both CLI and TUI paths so
     the operator knows what to do next regardless of mode.
 
-    pod-the-trader has no programmatic Level5 deposit path per SKILL
-    v1.7.2 — the operator funds USDC through the dashboard, and the
-    bot separately needs SOL in the trading wallet for Jupiter gas.
-    Both actions are called out explicitly.
+    pod-the-trader has no programmatic deposit path — the operator
+    funds USDC through the provider's dashboard, and the bot
+    separately needs SOL in the trading wallet for Jupiter gas. Both
+    actions are called out explicitly.
     """
     bar = "─" * 72
     print()
     print(bar)
-    print("  Level5 account registered.")
+    print(f"  {provider_display} account registered.")
     print()
     print(f"    Dashboard:     {dashboard_url}")
     print(f"    Contract:      {contract}")
@@ -130,14 +132,14 @@ def _print_post_registration_instructions(
     print()
     print("  Next steps:")
     print()
-    print("    1. Open the dashboard and deposit USDC. Level5 routes")
+    print(f"    1. Open the dashboard and deposit USDC. {provider_display} routes")
     print("       the deposit to this account via the deposit code.")
     print()
     print("    2. Send SOL to your trading wallet (for Jupiter gas):")
     print()
     print(f"         {wallet_address}")
     print()
-    print("  pod-the-trader will begin trading once both the Level5")
+    print(f"  pod-the-trader will begin trading once both the {provider_display}")
     print("  account and the trading wallet have funds.")
     print(bar)
     print(flush=True)
@@ -146,6 +148,7 @@ def _print_post_registration_instructions(
 async def async_main(
     config_path: str | None = None,
     base_domain_override: str | None = None,
+    provider_override: str | None = None,
 ) -> None:
     """Main async entry point."""
     load_dotenv()
@@ -157,28 +160,32 @@ async def async_main(
         print(f"Configuration error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    base_domain = _resolve_base_domain(config, base_domain_override)
+    provider = _resolve_provider(config, provider_override)
+    base_domain = _resolve_base_domain(config, base_domain_override, provider)
 
     # 2. Configure logging
     _configure_logging(config)
     logger.info("Pod The Trader starting up...")
-    logger.info("Using Level5 domain: %s", base_domain)
+    logger.info("Using %s domain: %s", provider.display_name, base_domain)
 
     storage_dir = config.get("storage.base_dir", "~/.pod_the_trader")
     rpc_urls = _resolve_rpc_urls(config)
-    rpc_url = rpc_urls[0]  # primary — used for writes and Level5 polling
+    rpc_url = rpc_urls[0]  # primary — used for writes and provider polling
 
-    # 3. Level5 auth
+    # 3. Provider auth
     level5_auth = Level5Auth(storage_dir)
-    creds = level5_auth.setup_interactive()
+    creds = level5_auth.setup_interactive(provider)
 
     if creds is None or not creds.api_token:
         if creds and creds.is_new:
             pass  # Will register below
         else:
+            env_var = f"{provider.key.upper()}_API_TOKEN"
             logger.critical(
-                "Level5 credentials required — it is the only LLM provider. "
-                "Set LEVEL5_API_TOKEN or run interactive setup."
+                "%s credentials required — it is the active LLM provider. "
+                "Set %s or run interactive setup.",
+                provider.display_name,
+                env_var,
             )
             sys.exit(1)
 
@@ -205,19 +212,20 @@ async def async_main(
         api_token=api_token,
         deposit_address=deposit_address,
         base_domain=base_domain,
+        provider=provider,
     ) as level5_client:
-        # 7. Register with Level5 if new
+        # 7. Register with the chosen provider if new
         if creds and creds.is_new:
-            logger.info("Registering with Level5...")
+            logger.info("Registering with %s...", provider.display_name)
             try:
                 account = await level5_client.register()
             except Level5Error as e:
-                logger.error("Level5 registration failed: %s", e)
+                logger.error("%s registration failed: %s", provider.display_name, e)
                 print(
-                    f"\nLevel5 registration failed: {e}\n\n"
-                    "This usually means the Level5 API returned an "
+                    f"\n{provider.display_name} registration failed: {e}\n\n"
+                    "This usually means the provider's API returned an "
                     "incomplete response. Try again in a moment, or "
-                    "contact Level5 support if it persists.",
+                    f"contact {provider.display_name} support if it persists.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -229,6 +237,7 @@ async def async_main(
             level5_auth.save(creds)
             deposit_address = account.deposit_address
             _print_post_registration_instructions(
+                provider_display=provider.display_name,
                 dashboard_url=creds.dashboard_url,
                 contract=account.deposit_address,
                 deposit_code=account.deposit_code,
@@ -244,16 +253,18 @@ async def async_main(
             )
             orchestrator = FundingOrchestrator(poller, level5_client)
 
-            min_level5_usdc = float(config.get("level5.min_balance_threshold_usdc", 0.1) or 0.0)
+            min_level5_usdc = float(
+                config.get(f"{provider.key}.min_balance_threshold_usdc", 0.1) or 0.0
+            )
             min_wallet_sol = float(config.get("polling.min_wallet_sol", 0.05) or 0.05)
 
             try:
                 print(
-                    f"\n  Waiting for Level5 funding via dashboard "
+                    f"\n  Waiting for {provider.display_name} funding via dashboard "
                     f"(min ${min_level5_usdc:.2f} USDC)..."
                 )
                 await orchestrator.wait_for_level5_funding(min_level5_usdc)
-                print("  Level5 account is funded.")
+                print(f"  {provider.display_name} account is funded.")
 
                 print(
                     f"\n  Waiting for trading wallet to hold at least "
@@ -548,19 +559,24 @@ def _print_shutdown_summary(
     print("\n".join(lines))
 
 
-def _parse_cli_args(argv: list[str]) -> tuple[str | None, str, str | None]:
-    """Parse command-line args into (config_path, ui_mode, base_domain).
+def _parse_cli_args(
+    argv: list[str],
+) -> tuple[str | None, str, str | None, str | None]:
+    """Parse command-line args into
+    ``(config_path, ui_mode, base_domain, provider)``.
 
     ui_mode ∈ {"auto", "tui", "cli"}. "auto" picks tui iff stdout is a TTY.
 
-    ``base_domain`` is the Level5 deployment host (e.g. ``level5.cloud``
-    or ``usepod.ai``). ``None`` means "fall back to the config value,
-    then the default". Accepts both ``--base-domain foo`` and
-    ``--base-domain=foo`` forms.
+    ``base_domain`` is the proxy deployment host (e.g. ``level5.cloud``
+    or ``usepod.ai``). ``provider`` is the LLM-proxy provider key
+    (``"level5"`` or ``"usepod"``). For both, ``None`` means "fall
+    back to the config value, then the default". Accepts both
+    ``--flag foo`` and ``--flag=foo`` forms.
     """
     config_path: str | None = None
     ui_mode = "auto"
     base_domain: str | None = None
+    provider: str | None = None
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -575,17 +591,48 @@ def _parse_cli_args(argv: list[str]) -> tuple[str | None, str, str | None]:
             i += 1
         elif arg.startswith("--base-domain="):
             base_domain = arg.split("=", 1)[1]
+        elif arg == "--provider":
+            if i + 1 >= len(argv):
+                raise SystemExit("--provider requires a value (level5 or usepod)")
+            provider = argv[i + 1]
+            i += 1
+        elif arg.startswith("--provider="):
+            provider = arg.split("=", 1)[1]
         elif not arg.startswith("--"):
             config_path = arg
         i += 1
-    return config_path, ui_mode, base_domain
+    return config_path, ui_mode, base_domain, provider
 
 
-def _resolve_base_domain(config: Config, cli_override: str | None) -> str:
-    """CLI flag wins over config; config wins over hardcoded default."""
+def _resolve_provider(config: Config, cli_override: str | None) -> ProviderConfig:
+    """CLI flag wins over config; config wins over default (Level5).
+
+    Raises ``SystemExit`` with a clear message if the value names an
+    unknown provider, so the operator hears about typos before the bot
+    tries to talk to a non-existent API.
+    """
+    raw = cli_override if cli_override else config.get("provider")
+    try:
+        return resolve_provider(raw)
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
+
+
+def _resolve_base_domain(
+    config: Config,
+    cli_override: str | None,
+    provider: ProviderConfig,
+) -> str:
+    """CLI flag wins over config; config wins over the provider default.
+
+    Looks up ``<provider.key>.base_domain`` so each provider's section
+    contributes its own host. The legacy ``level5.base_domain`` key is
+    naturally still consulted when provider == Level5.
+    """
     if cli_override:
         return cli_override.strip().strip("/")
-    return str(config.get("level5.base_domain", "level5.cloud")).strip().strip("/")
+    cfg_key = f"{provider.key}.base_domain"
+    return str(config.get(cfg_key, provider.default_domain)).strip().strip("/")
 
 
 def _resolve_ui_mode(requested: str) -> str:
@@ -689,13 +736,13 @@ def main() -> None:
 
     require_acceptance()
 
-    config_path, ui_mode, base_domain = _parse_cli_args(sys.argv[1:])
+    config_path, ui_mode, base_domain, provider = _parse_cli_args(sys.argv[1:])
     resolved = _resolve_ui_mode(ui_mode)
     try:
         if resolved == "tui":
-            asyncio.run(async_main_tui(config_path, base_domain))
+            asyncio.run(async_main_tui(config_path, base_domain, provider))
         else:
-            asyncio.run(async_main(config_path, base_domain))
+            asyncio.run(async_main(config_path, base_domain, provider))
     except KeyboardInterrupt:
         print("\nShutdown.")
 
@@ -703,6 +750,7 @@ def main() -> None:
 async def async_main_tui(
     config_path: str | None = None,
     base_domain_override: str | None = None,
+    provider_override: str | None = None,
 ) -> None:
     """TUI entry point: launch the Textual dashboard.
 
@@ -721,20 +769,21 @@ async def async_main_tui(
         print(f"Configuration error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    base_domain = _resolve_base_domain(config, base_domain_override)
+    provider = _resolve_provider(config, provider_override)
+    base_domain = _resolve_base_domain(config, base_domain_override, provider)
 
     _configure_logging(config, console=False)
     logger.info("Pod The Trader (TUI) starting up...")
-    logger.info("Using Level5 domain: %s", base_domain)
+    logger.info("Using %s domain: %s", provider.display_name, base_domain)
 
     storage_dir = config.get("storage.base_dir", "~/.pod_the_trader")
     rpc_urls = _resolve_rpc_urls(config)
-    rpc_url = rpc_urls[0]  # primary — used for writes and Level5 polling
+    rpc_url = rpc_urls[0]  # primary — used for writes and provider polling
 
     level5_auth = Level5Auth(storage_dir)
-    creds = level5_auth.setup_interactive()
+    creds = level5_auth.setup_interactive(provider)
     if (creds is None or not creds.api_token) and not (creds and creds.is_new):
-        logger.critical("Level5 credentials required.")
+        logger.critical("%s credentials required.", provider.display_name)
         sys.exit(1)
 
     wallet_mgr = WalletManager(storage_dir)
@@ -751,17 +800,18 @@ async def async_main_tui(
         api_token=creds.api_token if creds else None,
         deposit_address=creds.deposit_address if creds else None,
         base_domain=base_domain,
+        provider=provider,
     ) as level5_client:
         if creds and creds.is_new:
             try:
                 account = await level5_client.register()
             except Level5Error as e:
-                logger.error("Level5 registration failed: %s", e)
+                logger.error("%s registration failed: %s", provider.display_name, e)
                 print(
-                    f"\nLevel5 registration failed: {e}\n\n"
-                    "This usually means the Level5 API returned an "
+                    f"\n{provider.display_name} registration failed: {e}\n\n"
+                    "This usually means the provider's API returned an "
                     "incomplete response. Try again in a moment, or "
-                    "contact Level5 support if it persists.",
+                    f"contact {provider.display_name} support if it persists.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -773,6 +823,7 @@ async def async_main_tui(
             level5_auth.save(creds)
 
             _print_post_registration_instructions(
+                provider_display=provider.display_name,
                 dashboard_url=creds.dashboard_url,
                 contract=account.deposit_address,
                 deposit_code=account.deposit_code,
@@ -787,15 +838,17 @@ async def async_main_tui(
                 timeout=config.get("polling.funding_timeout_seconds", 3600),
             )
             orchestrator = FundingOrchestrator(poller, level5_client)
-            min_level5_usdc = float(config.get("level5.min_balance_threshold_usdc", 0.1) or 0.0)
+            min_level5_usdc = float(
+                config.get(f"{provider.key}.min_balance_threshold_usdc", 0.1) or 0.0
+            )
             min_wallet_sol = float(config.get("polling.min_wallet_sol", 0.05) or 0.05)
             try:
                 print(
-                    f"\n  Waiting for Level5 funding via dashboard "
+                    f"\n  Waiting for {provider.display_name} funding via dashboard "
                     f"(min ${min_level5_usdc:.2f} USDC)..."
                 )
                 await orchestrator.wait_for_level5_funding(min_level5_usdc)
-                print("  Level5 account is funded.")
+                print(f"  {provider.display_name} account is funded.")
 
                 print(
                     f"\n  Waiting for trading wallet to hold at least "

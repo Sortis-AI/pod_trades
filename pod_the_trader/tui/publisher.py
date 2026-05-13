@@ -30,6 +30,8 @@ class Publisher(Protocol):
         cooldown: int,
         dashboard_url: str = "",
         ledger_summary: dict[str, Any] | None = None,
+        provider_display: str = "Level5",
+        show_credits: bool = True,
     ) -> None: ...
 
     def on_cycle_start(self, cycle_num: int, timestamp: str) -> None: ...
@@ -67,6 +69,8 @@ class NullPublisher:
         cooldown: int,
         dashboard_url: str = "",
         ledger_summary: dict[str, Any] | None = None,
+        provider_display: str = "Level5",
+        show_credits: bool = True,
     ) -> None:
         pass
 

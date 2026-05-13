@@ -4,6 +4,12 @@ agent:
   max_iterations_per_turn: 10
   max_tokens: 2048
 
+# Active LLM-proxy provider. Supported: "level5", "usepod". Override
+# at startup with `--provider usepod`. Each provider has its own
+# config section below (level5: / usepod:) carrying the deployment
+# host and balance-threshold knobs.
+provider: "level5"
+
 level5:
   # Canonical Level5 domain. The API endpoint is derived as
   # `https://api.<base_domain>` and the dashboard as
@@ -12,6 +18,15 @@ level5:
   # pointing at an alternate deployment.
   base_domain: "level5.cloud"
   max_daily_spend_usdc: 10.0
+  min_balance_threshold_usdc: 0.1
+
+usepod:
+  # UsePod is a Rust port of Level5 with a byte-identical API surface
+  # (/v1/register, /proxy/{token}/v1/*, /proxy/{token}/balance) — only
+  # the dashboard URL pattern and the absence of a credits ledger
+  # differ. The bot can target this deployment by setting
+  # `provider: "usepod"` above or passing `--provider usepod`.
+  base_domain: "usepod.ai"
   min_balance_threshold_usdc: 0.1
 
 trading:

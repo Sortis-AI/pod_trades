@@ -544,7 +544,8 @@ class TradingAgent:
     async def trade_loop(self, shutdown_event: asyncio.Event) -> None:
         """Run the autonomous trading cycle."""
         cooldown = self._config.get("trading.cooldown_seconds", 300)
-        min_balance = self._config.get("level5.min_balance_threshold_usdc", 2.0)
+        provider_key = self._level5.provider.key
+        min_balance = self._config.get(f"{provider_key}.min_balance_threshold_usdc", 2.0)
 
         # In TUI mode, the orchestrator can't await print_startup_banner
         # before starting the worker (the worker IS the post-mount runtime).
@@ -560,31 +561,39 @@ class TradingAgent:
 
         while not shutdown_event.is_set():
             try:
-                # Check Level5 balance
+                # Check provider balance
+                provider_display = self._level5.provider.display_name
                 try:
                     balance = await self._level5.get_balance()
                     # Log the split so we can diagnose session-spend drift.
+                    # The credit column is meaningless for UsePod (always
+                    # $0 from the server) but logging it is harmless.
                     logger.info(
-                        "Level5 balance: usdc=$%.6f credits=$%.6f total=$%.6f",
+                        "%s balance: usdc=$%.6f credits=$%.6f total=$%.6f",
+                        provider_display,
                         self._level5.last_usdc_balance,
                         self._level5.last_credit_balance,
                         balance,
                     )
-                    # Publish the split (USDC vs credits) to any observer.
+                    # Publish the split to any observer. The TUI hides
+                    # the credit row when the active provider has no
+                    # credit ledger; the publisher contract stays the
+                    # same so we don't churn the publisher protocol.
                     self._publisher.on_level5_balance(
                         self._level5.last_usdc_balance,
                         self._level5.last_credit_balance,
                     )
                     if balance < min_balance:
                         logger.warning(
-                            "Level5 balance low: $%.2f (min: $%.2f). Pausing.",
+                            "%s balance low: $%.2f (min: $%.2f). Pausing.",
+                            provider_display,
                             balance,
                             min_balance,
                         )
                         await self._wait_or_shutdown(shutdown_event, cooldown)
                         continue
                 except Exception as e:
-                    logger.error("Failed to check Level5 balance: %s", e)
+                    logger.error("Failed to check %s balance: %s", provider_display, e)
 
                 # Sample prices for SOL + target token into the price log
                 await self._sample_prices()
@@ -823,6 +832,7 @@ class TradingAgent:
 
         # TUI path: publish events and return.
         if self._tui_mode:
+            provider_cfg = self._level5.provider
             self._publisher.on_startup(
                 wallet=self._wallet_address,
                 target=target,
@@ -832,6 +842,8 @@ class TradingAgent:
                 cooldown=cooldown,
                 dashboard_url=self._level5.get_dashboard_url(),
                 ledger_summary=ledger_summary,
+                provider_display=provider_cfg.display_name,
+                show_credits=provider_cfg.has_credits,
             )
             if snapshot:
                 self._publisher.on_portfolio_snapshot(snapshot)

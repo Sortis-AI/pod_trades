@@ -267,8 +267,45 @@ class TestProxyUrl:
         assert client.get_dashboard_url() == "https://level5.cloud/dashboard/mytoken"
 
     def test_get_dashboard_url_custom_domain(self) -> None:
+        # No explicit provider: defaults to Level5 path-style template,
+        # which is the historical behaviour that pre-provider users
+        # still rely on when pointing --base-domain at any L5-compatible
+        # deployment (including usepod.ai).
         client = Level5Client(api_token="mytoken", base_domain="usepod.ai")
         assert client.get_dashboard_url() == "https://usepod.ai/dashboard/mytoken"
+
+    def test_get_dashboard_url_level5_provider_explicit(self) -> None:
+        from pod_the_trader.level5.provider import resolve_provider
+
+        client = Level5Client(
+            api_token="mytoken",
+            base_domain="level5.cloud",
+            provider=resolve_provider("level5"),
+        )
+        assert client.get_dashboard_url() == "https://level5.cloud/dashboard/mytoken"
+
+    def test_get_dashboard_url_usepod_provider_uses_query_style(self) -> None:
+        from pod_the_trader.level5.provider import resolve_provider
+
+        client = Level5Client(
+            api_token="mytoken",
+            base_domain="usepod.ai",
+            provider=resolve_provider("usepod"),
+        )
+        assert client.get_dashboard_url() == "https://usepod.ai/dashboard?token=mytoken"
+
+    def test_provider_property_exposed(self) -> None:
+        from pod_the_trader.level5.provider import resolve_provider
+
+        usepod = resolve_provider("usepod")
+        client = Level5Client(api_token="t", provider=usepod)
+        assert client.provider.key == "usepod"
+        assert client.provider.has_credits is False
+
+    def test_provider_property_defaults_to_level5(self) -> None:
+        client = Level5Client(api_token="t")
+        assert client.provider.key == "level5"
+        assert client.provider.has_credits is True
 
     def test_is_registered(self) -> None:
         assert Level5Client(api_token="tok").is_registered() is True

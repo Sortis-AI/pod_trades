@@ -27,6 +27,11 @@ class Level5Widget(Static):
     credit: reactive[float] = reactive(0.0, init=False)
     model: reactive[str] = reactive("", init=False)
     dashboard_url: reactive[str] = reactive("", init=False)
+    # Provider-aware display: title swaps to the active provider's name
+    # and the Credits row + session credits fragment disappear for
+    # providers without a promotional-credits ledger (e.g. UsePod).
+    provider_display: reactive[str] = reactive("Level5", init=False)
+    show_credits: reactive[bool] = reactive(True, init=False)
 
     def __init__(self, **kwargs) -> None:
         super().__init__("[b #ffcc00]Level5 Billing[/]\n[dim]no balance[/]", markup=True, **kwargs)
@@ -65,6 +70,12 @@ class Level5Widget(Static):
     def watch_dashboard_url(self) -> None:
         self.update(self._format())
 
+    def watch_provider_display(self) -> None:
+        self.update(self._format())
+
+    def watch_show_credits(self) -> None:
+        self.update(self._format())
+
     def _bar_width(self) -> int:
         # Total content width minus border (2), padding (2), label+value (~22),
         # and trailing percent column (~6).
@@ -72,13 +83,11 @@ class Level5Widget(Static):
         return max(6, min(40, avail))
 
     def _format(self) -> str:
-        title = "[b #ffcc00]Level5 Billing[/]"
+        title = f"[b #ffcc00]{self.provider_display} Billing[/]"
         total = self.usdc + self.credit
         if total <= 0 and self._session_start_usdc is None:
             return title + "\n[dim]no balance[/]"
 
-        usdc_pct = self.usdc / total * 100 if total > 0 else 0.0
-        credit_pct = self.credit / total * 100 if total > 0 else 0.0
         bar_w = self._bar_width()
 
         # Session inference cost: delta from the very first balance we saw.
@@ -93,20 +102,48 @@ class Level5Widget(Static):
             spent_credit = max(0.0, self._session_start_credit - self.credit)
         spent_total = spent_usdc + spent_credit
 
-        lines = [
+        # When the provider has no credit ledger (UsePod), the USDC bar
+        # represents the entire balance — there's no credit slice
+        # competing for it — so the percentage shows 100 % when any
+        # USDC is present. When there are credits, both percentages
+        # reflect their share of the combined balance.
+        if self.show_credits:
+            usdc_pct = self.usdc / total * 100 if total > 0 else 0.0
+            credit_pct = self.credit / total * 100 if total > 0 else 0.0
+        else:
+            usdc_pct = 100.0 if self.usdc > 0 else 0.0
+            credit_pct = 0.0
+
+        lines: list[str] = [
             title,
             "",
             f"[b #00d4ff]USDC[/]     [b]${self.usdc:>10.4f}[/]  "
             f"{_bar(usdc_pct, bar_w)} [dim]{usdc_pct:4.0f}%[/]",
-            f"[b #00d4ff]Credits[/]  [b]${self.credit:>10.4f}[/]  "
-            f"{_bar(credit_pct, bar_w)} [dim]{credit_pct:4.0f}%[/]",
-            "",
-            f"[#ffcc00]Total:[/]    [b #00ff88]${total:,.4f}[/]",
-            "",
-            f"[#ffcc00]Session:[/]  [b #ff3366]${spent_total:.6f}[/]  "
-            f"[dim]usdc[/] ${spent_usdc:.6f}  "
-            f"[dim]credits[/] ${spent_credit:.6f}",
         ]
+        if self.show_credits:
+            lines.append(
+                f"[b #00d4ff]Credits[/]  [b]${self.credit:>10.4f}[/]  "
+                f"{_bar(credit_pct, bar_w)} [dim]{credit_pct:4.0f}%[/]"
+            )
+
+        # "Total" only differs from USDC when there's a real credit
+        # ledger. Hiding it for credit-less providers reduces noise
+        # without losing information.
+        if self.show_credits:
+            lines.extend(
+                [
+                    "",
+                    f"[#ffcc00]Total:[/]    [b #00ff88]${total:,.4f}[/]",
+                ]
+            )
+
+        session_line = (
+            f"[#ffcc00]Session:[/]  [b #ff3366]${spent_total:.6f}[/]  "
+            f"[dim]usdc[/] ${spent_usdc:.6f}"
+        )
+        if self.show_credits:
+            session_line += f"  [dim]credits[/] ${spent_credit:.6f}"
+        lines.extend(["", session_line])
 
         if self.model:
             lines.append("")
@@ -122,7 +159,7 @@ class Level5Widget(Static):
         return "\n".join(lines)
 
     def action_open_dashboard(self) -> None:
-        """Open the Level5 dashboard URL in the default web browser."""
+        """Open the active provider's dashboard URL in the default web browser."""
         if not self.dashboard_url:
             return
         import webbrowser
@@ -130,7 +167,7 @@ class Level5Widget(Static):
         try:
             webbrowser.open(self.dashboard_url)
             self.app.notify(
-                "Opening Level5 dashboard…",
+                f"Opening {self.provider_display} dashboard…",
                 title="Dashboard",
                 timeout=2,
             )

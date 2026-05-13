@@ -27,6 +27,7 @@ _ENV_OVERRIDES: dict[str, str] = {
     "SOLANA_RPC_URL": "solana.rpc_url",
     "TARGET_TOKEN_ADDRESS": "trading.target_token_address",
     "LEVEL5_API_TOKEN": "level5.api_token",
+    "USEPOD_API_TOKEN": "usepod.api_token",
     "SOLANA_PRIVATE_KEY": "wallet.private_key",
 }
 
