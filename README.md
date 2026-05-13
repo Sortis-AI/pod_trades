@@ -173,6 +173,62 @@ bash scripts/check.sh 60
 
 The test suite is mostly unit tests against real component boundaries with mocked external services (Level5, Jupiter, Solana RPC). The TUI widgets are tested through `Textual App.run_test()` so reactive behavior runs for real.
 
+## Releasing
+
+Releases are tagged `vX.Y.Z` and published on GitHub. Operator machines pull them in via `pod-the-trader update`, which does `git fetch && git reset --hard origin/<branch> && uv sync` — no version pin to bump, no installer change required. The installers (`install.sh`, `install.ps1`) clone HEAD, so new installs also pick up the latest release automatically.
+
+End-to-end release procedure:
+
+```bash
+# 1. Bump the version. Bundling the bump in the same commit as the
+#    user-visible change is the established pattern — see e63dd52
+#    (0.2.0) and 21d2bad (0.2.1).
+sed -i 's/^version = ".*"/version = "X.Y.Z"/' pyproject.toml
+
+# 2. Regenerate uv.lock (this happens implicitly on the next `uv run`,
+#    but doing it explicitly keeps the lock change in the same commit
+#    as the version bump). Pass `--extra dev` so lint/test tools stay
+#    installed — a bare `uv sync` will uninstall them.
+uv sync --extra dev
+
+# 3. Lint + tests must pass before tagging.
+uv run ruff check pod_the_trader/ tests/
+uv run ruff format pod_the_trader/ tests/
+uv run pytest -q
+
+# 4. Commit. Stage specific files only — never `git add -A`.
+git add pyproject.toml uv.lock <other-changed-files>
+git commit -m "<one-line summary>"
+
+# 5. Annotated tag with a short body listing the commits included.
+git tag -a vX.Y.Z -m "X.Y.Z: <one-line summary>
+
+<short-sha-1> <subject>
+<short-sha-2> <subject>"
+
+# 6. Push the branch first, then the tag — never the tag alone, or
+#    GitHub will create a release whose commits are not yet on main.
+git push origin main
+git push origin vX.Y.Z
+
+# 7. Publish the GitHub release. Notes follow the v0.2.0/v0.2.1
+#    template: short summary, one section per change with the "why",
+#    config additions table, operator-visible gaps that remain.
+gh release create vX.Y.Z \
+  --title "vX.Y.Z — <short title>" \
+  --notes "$(cat <<'EOF'
+<markdown release notes>
+EOF
+)"
+```
+
+Conventions:
+
+- **Never** force-push `main` or rewrite published tags.
+- **Never** skip pre-commit hooks (`--no-verify`) or bypass signing on a release commit.
+- A release that changes the strategy prompt should call out behavior changes the operator will see on the next cycle — strategies in this repo are live on mainnet wallets, not lab experiments.
+- If a release introduces a config field, add it to the [Configuration](#configuration) table in the same pass.
+
 ## Repository layout
 
 ```
