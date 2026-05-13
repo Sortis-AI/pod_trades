@@ -6,6 +6,8 @@ import asyncio
 import contextlib
 import logging
 import time
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import TYPE_CHECKING, Any
 
 from textual.app import App, ComposeResult
@@ -31,6 +33,20 @@ if TYPE_CHECKING:
     from .publisher import Publisher
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_version() -> str:
+    """Return the installed package version, or ``"dev"`` if running
+    from a source tree that hasn't been installed (``uv sync`` not run
+    yet, or running pytest from a checkout with no metadata).
+    """
+    try:
+        return _pkg_version("pod-the-trader")
+    except PackageNotFoundError:
+        return "dev"
+
+
+_VERSION = _resolve_version()
 
 
 class PodDashboardApp(App):
@@ -66,7 +82,7 @@ class PodDashboardApp(App):
         self._run_agent = run_agent
         self._shutdown_event = asyncio.Event()
         self._cycle_started_at: float | None = None
-        self._header_text = "🤖 pod-the-trader · starting up…"
+        self._header_text = f"🤖 pod-the-trader v{_VERSION} · starting up…"
         self._log_handler: LogTailHandler | None = None
         # Cache the latest token price seen via on_portfolio_snapshot so
         # health/cycle handlers can reprice the lot ledger without an RPC.
@@ -169,7 +185,8 @@ class PodDashboardApp(App):
         short_wallet = wallet[:6] + "…" + wallet[-4:] if len(wallet) > 12 else wallet
         symbol = target_symbol or "TARGET"
         self._header_text = (
-            f"🤖 pod-the-trader · {short_wallet} · {symbol} · {model} · every {cooldown}s"
+            f"🤖 pod-the-trader v{_VERSION} · {short_wallet} · {symbol} "
+            f"· {model} · every {cooldown}s"
         )
         self._set_header(self._header_text)
         self._refresh_health(ledger_summary)
