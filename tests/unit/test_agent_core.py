@@ -85,6 +85,24 @@ class TestConstruction:
         with pytest.raises(ValueError, match="Level5 registration required"):
             TradingAgent(sample_config, mock_l5, registry, memory)
 
+    def test_openai_client_constructed_with_5_retries(
+        self,
+        sample_config: Config,
+        mock_level5: Level5Client,
+        registry,
+        memory,
+    ) -> None:
+        # Regression test for the 0.3.3 fix: the OpenAI SDK defaults
+        # max_retries to 2, which wasn't enough to ride out the
+        # transient "internal: cache error" 500s the proxy throws under
+        # cache pressure. Bumped to 5 to match the Level5/Jupiter
+        # client retry policy and the user's "1-minute outage budget".
+        with patch("pod_the_trader.agent.core.AsyncOpenAI") as mock_openai:
+            TradingAgent(sample_config, mock_level5, registry, memory)
+        assert mock_openai.called
+        kwargs = mock_openai.call_args.kwargs
+        assert kwargs.get("max_retries") == 5
+
 
 class TestSystemPrompt:
     def test_system_prompt_contains_target(self, agent: TradingAgent) -> None:

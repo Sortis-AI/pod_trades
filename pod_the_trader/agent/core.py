@@ -291,9 +291,16 @@ class TradingAgent:
         if not level5_client.is_registered():
             raise ValueError("Level5 registration required — it is the only LLM provider")
 
+        # max_retries=5 to match the Level5/Jupiter retry policy. The
+        # SDK uses exponential backoff with jitter on 408/409/429/5xx,
+        # so a transient upstream 500 (e.g. "internal: cache error"
+        # from the proxy) no longer surfaces as a cycle-crashing
+        # InternalServerError — the default of 2 was too small to ride
+        # out the proxy's worst hiccups.
         self._client = AsyncOpenAI(
             base_url=level5_client.get_api_base_url(),
             api_key="level5",
+            max_retries=5,
         )
 
     def _compose_trade_context(self, current_price: float) -> str:

@@ -312,13 +312,26 @@ class Level5Client:
         path: str,
         *,
         json_data: dict | None = None,
-        max_retries: int = 3,
+        max_retries: int = 5,
     ) -> dict:
-        """Make an HTTP request with retry on 5xx and transport errors."""
+        """Make an HTTP request with retry on 5xx and transport errors.
+
+        ``max_retries`` is the number of retries AFTER the initial
+        attempt — so ``max_retries=5`` means up to 6 total HTTP
+        requests. Exponential backoff starting at 2s: sleeps of 2, 4,
+        8, 16, 32 seconds between retries, totalling ~62s of
+        wall-clock before the helper gives up. That's long enough to
+        ride out a one-minute upstream outage without bombing the
+        cycle and short enough that the bot's next 5-minute cycle
+        isn't pushed out of band. The 0.3.3 bump from 3 attempts to
+        this scheme was driven by recurring "internal: cache error"
+        500s from the proxy under load.
+        """
         url = f"{self._base_url}{path}"
         last_error: Exception | None = None
+        total_attempts = max_retries + 1  # initial try + retries
 
-        for attempt in range(max_retries):
+        for attempt in range(total_attempts):
             try:
                 response = await self._client.request(method, url, json=json_data)
                 response.raise_for_status()
@@ -326,33 +339,35 @@ class Level5Client:
             except httpx.HTTPStatusError as e:
                 if e.response.status_code >= 500:
                     last_error = e
-                    wait = 2**attempt
-                    logger.warning(
-                        "Level5 %s %s returned %d, retrying in %ds (%d/%d)",
-                        method,
-                        _sanitize_url(url),
-                        e.response.status_code,
-                        wait,
-                        attempt + 1,
-                        max_retries,
-                    )
-                    await asyncio.sleep(wait)
+                    if attempt < max_retries:
+                        wait = 2 ** (attempt + 1)
+                        logger.warning(
+                            "Level5 %s %s returned %d, retrying in %ds (%d/%d)",
+                            method,
+                            _sanitize_url(url),
+                            e.response.status_code,
+                            wait,
+                            attempt + 1,
+                            max_retries,
+                        )
+                        await asyncio.sleep(wait)
                     continue
                 raise Level5Error(
                     f"Level5 API error: {e.response.status_code} on {_sanitize_url(url)}"
                 ) from e
             except httpx.TransportError as e:
                 last_error = e
-                wait = 2**attempt
-                logger.warning(
-                    "Level5 transport error on %s, retrying in %ds (%d/%d)",
-                    _sanitize_url(url),
-                    wait,
-                    attempt + 1,
-                    max_retries,
-                )
-                await asyncio.sleep(wait)
+                if attempt < max_retries:
+                    wait = 2 ** (attempt + 1)
+                    logger.warning(
+                        "Level5 transport error on %s, retrying in %ds (%d/%d)",
+                        _sanitize_url(url),
+                        wait,
+                        attempt + 1,
+                        max_retries,
+                    )
+                    await asyncio.sleep(wait)
 
         raise Level5Error(
-            f"Level5 request failed after {max_retries} attempts: {last_error}"
+            f"Level5 request failed after {total_attempts} attempts: {last_error}"
         ) from last_error

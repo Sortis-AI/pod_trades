@@ -346,12 +346,23 @@ class TestRetry:
             await client.register()
 
     @respx.mock
-    async def test_raises_after_max_retries(self, client: Level5Client) -> None:
-        respx.post(f"{BASE_URL}/v1/register").mock(
+    async def test_raises_after_max_retries(
+        self, client: Level5Client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Patch the backoff sleep so 5 retries don't slow the suite by
+        # ~15s. We're verifying behaviour, not wall-clock timing.
+        async def _no_sleep(_seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr("pod_the_trader.level5.client.asyncio.sleep", _no_sleep)
+        route = respx.post(f"{BASE_URL}/v1/register").mock(
             return_value=httpx.Response(503, json={"error": "unavailable"})
         )
         with pytest.raises(Level5Error, match="failed after"):
             await client.register()
+        # 5 retries means 1 initial attempt + 5 retries = 6 total
+        # HTTP calls (the default since 0.3.3).
+        assert route.call_count == 6
 
 
 class TestContextManager:

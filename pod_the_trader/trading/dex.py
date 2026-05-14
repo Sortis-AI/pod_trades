@@ -286,25 +286,32 @@ class JupiterDex:
         *,
         params: dict | None = None,
         json_data: dict | None = None,
-        max_retries: int = 3,
+        max_retries: int = 5,
     ) -> Any:
         """HTTP request with retry on failure.
 
         Returns whatever ``response.json()`` produces — Jupiter's various
         endpoints return either an object (quote, price) or a list
         (search), so callers must know what shape they're expecting.
+
+        ``max_retries`` is the number of retries AFTER the initial
+        attempt — ``max_retries=5`` means up to 6 total HTTP requests.
+        Exponential backoff starting at 2s: sleeps of 2, 4, 8, 16, 32
+        seconds between retries, totalling ~62s of wall-clock before
+        the helper gives up. Matches the Level5 client's policy.
         """
         last_error: Exception | None = None
+        total_attempts = max_retries + 1  # initial try + retries
 
-        for attempt in range(max_retries):
+        for attempt in range(total_attempts):
             try:
                 response = await self._client.request(method, url, params=params, json=json_data)
                 response.raise_for_status()
                 return response.json()
             except (httpx.HTTPStatusError, httpx.TransportError) as e:
                 last_error = e
-                if attempt < max_retries - 1:
-                    wait = 2**attempt
+                if attempt < max_retries:
+                    wait = 2 ** (attempt + 1)
                     logger.warning(
                         "Jupiter %s %s failed, retrying in %ds (attempt %d/%d): %s",
                         method,
@@ -317,5 +324,5 @@ class JupiterDex:
                     await asyncio.sleep(wait)
 
         raise JupiterError(
-            f"Jupiter request failed after {max_retries} attempts: {last_error}"
+            f"Jupiter request failed after {total_attempts} attempts: {last_error}"
         ) from last_error

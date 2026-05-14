@@ -66,12 +66,23 @@ class TestGetQuote:
         assert route.call_count == 2
 
     @respx.mock
-    async def test_raises_after_max_retries(self, dex: JupiterDex) -> None:
-        respx.get(f"{QUOTE_URL}/quote").mock(
+    async def test_raises_after_max_retries(
+        self, dex: JupiterDex, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Patch the backoff sleep so 5 retries don't slow the suite by
+        # ~15s. We're verifying behaviour, not wall-clock timing.
+        async def _no_sleep(_seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr("pod_the_trader.trading.dex.asyncio.sleep", _no_sleep)
+        route = respx.get(f"{QUOTE_URL}/quote").mock(
             return_value=httpx.Response(500, json={"error": "down"})
         )
         with pytest.raises(JupiterError, match="failed after"):
             await dex.get_quote(SOL_MINT, USDC_MINT, 1_000_000_000)
+        # 5 retries = 1 initial + 5 retries = 6 total HTTP calls
+        # (the default since 0.3.3).
+        assert route.call_count == 6
 
 
 class TestExecuteSwap:
@@ -104,7 +115,18 @@ class TestExecuteSwap:
         assert result.signature == "swapsig123"
 
     @respx.mock
-    async def test_failure_returns_error(self, dex: JupiterDex, mock_keypair: Keypair) -> None:
+    async def test_failure_returns_error(
+        self,
+        dex: JupiterDex,
+        mock_keypair: Keypair,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Patch the backoff sleep — with 5 retries × exponential
+        # backoff this test would otherwise take ~62s of wall clock.
+        async def _no_sleep(_seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr("pod_the_trader.trading.dex.asyncio.sleep", _no_sleep)
         respx.get(f"{QUOTE_URL}/quote").mock(
             return_value=httpx.Response(500, json={"error": "no route"})
         )
