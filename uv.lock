@@ -400,7 +400,7 @@ wheels = [
 
 [[package]]
 name = "pod-the-trader"
-version = "0.3.3"
+version = "0.3.4"
 source = { editable = "." }
 dependencies = [
     { name = "base58" },
