@@ -20,7 +20,7 @@ from pod_the_trader.data.ledger import TradeLedger
 from pod_the_trader.data.lot_ledger import LotLedger, migrate_from_trade_ledger
 from pod_the_trader.data.price_log import PriceLog
 from pod_the_trader.data.wallet_log import WalletLog, WalletSnapshot
-from pod_the_trader.level5.auth import Level5Auth
+from pod_the_trader.level5.auth import Level5Auth, Level5Credentials
 from pod_the_trader.level5.client import Level5Client, Level5Error
 from pod_the_trader.level5.poller import BalancePoller, FundingOrchestrator
 from pod_the_trader.level5.provider import ProviderConfig, resolve_provider
@@ -161,20 +161,27 @@ async def async_main(
         sys.exit(1)
 
     provider = _resolve_provider(config, provider_override)
-    base_domain = _resolve_base_domain(config, base_domain_override, provider)
+    # base_domain is computed AFTER the wizard so the operator's
+    # in-wizard provider choice (or saved credentials' provider) wins
+    # over the CLI/config default. See _reconcile_provider_with_creds.
 
     # 2. Configure logging
     _configure_logging(config)
     logger.info("Pod The Trader starting up...")
-    logger.info("Using %s domain: %s", provider.display_name, base_domain)
 
     storage_dir = config.get("storage.base_dir", "~/.pod_the_trader")
     rpc_urls = _resolve_rpc_urls(config)
     rpc_url = rpc_urls[0]  # primary — used for writes and provider polling
 
-    # 3. Provider auth
+    # 3. Provider auth (wizard may pick a different provider than the
+    # resolved default; reconciler below switches to whatever the
+    # returned credentials actually name).
     level5_auth = Level5Auth(storage_dir)
     creds = level5_auth.setup_interactive(provider)
+    provider, base_domain = _reconcile_provider_with_creds(
+        provider, creds, config, base_domain_override
+    )
+    logger.info("Using %s domain: %s", provider.display_name, base_domain)
 
     if creds is None or not creds.api_token:
         if creds and creds.is_new:
@@ -635,6 +642,41 @@ def _resolve_base_domain(
     return str(config.get(cfg_key, provider.default_domain)).strip().strip("/")
 
 
+def _reconcile_provider_with_creds(
+    provider: ProviderConfig,
+    creds: Level5Credentials | None,
+    config: Config,
+    base_domain_override: str | None,
+) -> tuple[ProviderConfig, str]:
+    """Reconcile the active provider with what setup_interactive returned.
+
+    The outer ``provider`` is resolved from CLI flag / config / default
+    BEFORE the wizard runs because we need it to seed the wizard's
+    default chooser and to know which env var (``LEVEL5_API_TOKEN`` vs
+    ``USEPOD_API_TOKEN``) to consult. Inside the wizard the operator
+    can pick a different provider, and a saved credentials file may
+    name a different provider than the CLI default. In either case,
+    the returned credentials' ``provider`` field is authoritative for
+    everything downstream — client construction, registration
+    endpoint, dashboard URL, panel title — so we switch to it before
+    constructing ``Level5Client``. Without this, picking UsePod in the
+    wizard while the config default is Level5 registers a Level5
+    account by mistake (the exact bug fixed in 0.3.1).
+
+    Returns the active ``(provider, base_domain)`` tuple. Logs a
+    switch line when the credentials override the resolved default.
+    """
+    if creds is None or creds.provider == provider.key:
+        return provider, _resolve_base_domain(config, base_domain_override, provider)
+    chosen = resolve_provider(creds.provider)
+    logger.info(
+        "Provider from credentials: %s (overrides resolved default %s)",
+        chosen.display_name,
+        provider.display_name,
+    )
+    return chosen, _resolve_base_domain(config, base_domain_override, chosen)
+
+
 def _resolve_ui_mode(requested: str) -> str:
     if requested in ("tui", "cli"):
         return requested
@@ -770,11 +812,12 @@ async def async_main_tui(
         sys.exit(1)
 
     provider = _resolve_provider(config, provider_override)
-    base_domain = _resolve_base_domain(config, base_domain_override, provider)
+    # base_domain computed after wizard so the operator's in-wizard
+    # choice wins over the resolved default. See
+    # _reconcile_provider_with_creds for the rationale.
 
     _configure_logging(config, console=False)
     logger.info("Pod The Trader (TUI) starting up...")
-    logger.info("Using %s domain: %s", provider.display_name, base_domain)
 
     storage_dir = config.get("storage.base_dir", "~/.pod_the_trader")
     rpc_urls = _resolve_rpc_urls(config)
@@ -782,6 +825,11 @@ async def async_main_tui(
 
     level5_auth = Level5Auth(storage_dir)
     creds = level5_auth.setup_interactive(provider)
+    provider, base_domain = _reconcile_provider_with_creds(
+        provider, creds, config, base_domain_override
+    )
+    logger.info("Using %s domain: %s", provider.display_name, base_domain)
+
     if (creds is None or not creds.api_token) and not (creds and creds.is_new):
         logger.critical("%s credentials required.", provider.display_name)
         sys.exit(1)
