@@ -62,7 +62,7 @@ class TestToolDispatch:
         resp2 = MagicMock()
         resp2.choices = [choice2]
 
-        with patch("pod_the_trader.agent.core.AsyncOpenAI") as mock_openai_cls:
+        with patch("pod_the_trader.agent.core._PodTraderAsyncOpenAI") as mock_openai_cls:
             mock_client = MagicMock()
             mock_client.chat.completions.create = AsyncMock(side_effect=[resp1, resp2])
             mock_openai_cls.return_value = mock_client

@@ -25,6 +25,49 @@ from pod_the_trader.tui.publisher import NullPublisher, Publisher
 
 logger = logging.getLogger(__name__)
 
+
+def _pod_trader_backoff_seconds(attempt_index: int) -> float:
+    """Exponential backoff schedule: 2, 4, 8, 16, 32 seconds.
+
+    ``attempt_index`` is 0 for the first retry, 1 for the second,
+    etc. With 5 retries (the configured ``max_retries``), the
+    cumulative wait before giving up is 2+4+8+16+32 = 62 seconds —
+    matches the Level5 and Jupiter retry helpers so all three core
+    API surfaces share the same one-minute outage budget.
+    """
+    return 2.0 * (2.0**attempt_index)
+
+
+class _PodTraderAsyncOpenAI(AsyncOpenAI):
+    """``AsyncOpenAI`` with the bot's exponential-backoff schedule.
+
+    The SDK default uses ``INITIAL_RETRY_DELAY=0.5`` capped at
+    ``MAX_RETRY_DELAY=8`` with jitter, so 5 retries total about 15.5
+    seconds of wall clock. That's noticeably out of step with the
+    Level5/Jupiter helpers, which give a transient upstream outage 62
+    seconds to recover. Overriding ``_calculate_retry_timeout`` lets
+    all three core API surfaces share one policy.
+
+    ``Retry-After`` headers within the reasonable range (1-60s) are
+    still honored — that's the upstream telling us how long to back
+    off, and matching the SDK default behavior there is the polite
+    thing to do.
+    """
+
+    def _calculate_retry_timeout(
+        self,
+        remaining_retries: int,
+        options: object,
+        response_headers: object | None = None,
+    ) -> float:
+        max_retries = options.get_max_retries(self.max_retries)  # type: ignore[attr-defined]
+        retry_after = self._parse_retry_after_header(response_headers)  # type: ignore[arg-type]
+        if retry_after is not None and 0 < retry_after <= 60:
+            return retry_after
+        nb_retries = max_retries - remaining_retries
+        return _pod_trader_backoff_seconds(nb_retries)
+
+
 SYSTEM_PROMPT_BASE = (
     "You are Pod The Trader, an autonomous Solana trading agent.\n\n"
     "Your job is to analyze market conditions and make informed trading "
@@ -291,13 +334,13 @@ class TradingAgent:
         if not level5_client.is_registered():
             raise ValueError("Level5 registration required — it is the only LLM provider")
 
-        # max_retries=5 to match the Level5/Jupiter retry policy. The
-        # SDK uses exponential backoff with jitter on 408/409/429/5xx,
-        # so a transient upstream 500 (e.g. "internal: cache error"
-        # from the proxy) no longer surfaces as a cycle-crashing
-        # InternalServerError — the default of 2 was too small to ride
-        # out the proxy's worst hiccups.
-        self._client = AsyncOpenAI(
+        # 5 retries with a 2/4/8/16/32-second exponential backoff
+        # schedule (62-second total budget) — matches the Level5 and
+        # Jupiter retry helpers exactly. _PodTraderAsyncOpenAI
+        # overrides the SDK's default 0.5-8s timing so a transient
+        # upstream 500 gets the same one-minute outage budget no
+        # matter which client raised it.
+        self._client = _PodTraderAsyncOpenAI(
             base_url=level5_client.get_api_base_url(),
             api_key="level5",
             max_retries=5,

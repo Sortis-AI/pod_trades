@@ -86,7 +86,7 @@ class TestTradeCycle:
         # 2. Agent responds with analysis
         resp2 = _make_response(content="Based on the quote, I recommend waiting.")
 
-        with patch("pod_the_trader.agent.core.AsyncOpenAI") as mock_openai_cls:
+        with patch("pod_the_trader.agent.core._PodTraderAsyncOpenAI") as mock_openai_cls:
             mock_openai = MagicMock()
             mock_openai.chat.completions.create = AsyncMock(side_effect=[resp1, resp2])
             mock_openai_cls.return_value = mock_openai

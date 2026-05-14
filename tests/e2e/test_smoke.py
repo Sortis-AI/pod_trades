@@ -73,7 +73,7 @@ class TestSmoke:
         response = MagicMock()
         response.choices = [choice]
 
-        with patch("pod_the_trader.agent.core.AsyncOpenAI") as mock_openai_cls:
+        with patch("pod_the_trader.agent.core._PodTraderAsyncOpenAI") as mock_openai_cls:
             mock_client = MagicMock()
             mock_client.chat.completions.create = AsyncMock(return_value=response)
             mock_openai_cls.return_value = mock_client

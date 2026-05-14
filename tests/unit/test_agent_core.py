@@ -74,7 +74,7 @@ def agent(
     registry: ToolRegistry,
     memory: ConversationMemory,
 ) -> TradingAgent:
-    with patch("pod_the_trader.agent.core.AsyncOpenAI"):
+    with patch("pod_the_trader.agent.core._PodTraderAsyncOpenAI"):
         return TradingAgent(sample_config, mock_level5, registry, memory)
 
 
@@ -97,11 +97,106 @@ class TestConstruction:
         # transient "internal: cache error" 500s the proxy throws under
         # cache pressure. Bumped to 5 to match the Level5/Jupiter
         # client retry policy and the user's "1-minute outage budget".
-        with patch("pod_the_trader.agent.core.AsyncOpenAI") as mock_openai:
+        with patch("pod_the_trader.agent.core._PodTraderAsyncOpenAI") as mock_openai:
             TradingAgent(sample_config, mock_level5, registry, memory)
         assert mock_openai.called
         kwargs = mock_openai.call_args.kwargs
         assert kwargs.get("max_retries") == 5
+
+
+class TestPodTraderBackoffSchedule:
+    """The OpenAI SDK's default ``INITIAL_RETRY_DELAY=0.5``,
+    ``MAX_RETRY_DELAY=8`` produces a ~15s total backoff for 5 retries
+    — out of step with the 62s budget Level5/Jupiter give the
+    upstream. ``_PodTraderAsyncOpenAI`` overrides the SDK's
+    ``_calculate_retry_timeout`` so all three core API surfaces share
+    the same 2/4/8/16/32 schedule.
+    """
+
+    def test_backoff_schedule_matches_2_4_8_16_32(self) -> None:
+        from pod_the_trader.agent.core import _pod_trader_backoff_seconds
+
+        # Attempt 0 is the first retry (after the first failure).
+        assert _pod_trader_backoff_seconds(0) == 2.0
+        assert _pod_trader_backoff_seconds(1) == 4.0
+        assert _pod_trader_backoff_seconds(2) == 8.0
+        assert _pod_trader_backoff_seconds(3) == 16.0
+        assert _pod_trader_backoff_seconds(4) == 32.0
+        # 5 retries (= the configured max_retries) sum to 62 seconds
+        # of wall-clock budget. That's the "1-minute outage" the user
+        # specified for unified retry policy.
+        cumulative = sum(_pod_trader_backoff_seconds(i) for i in range(5))
+        assert cumulative == 62.0
+
+    def test_override_uses_custom_schedule(
+        self,
+        sample_config: Config,
+        mock_level5: Level5Client,
+        registry,
+        memory,
+    ) -> None:
+        # Build a real subclass instance and exercise the override.
+        # Skip the network: the constructor doesn't actually talk to
+        # OpenAI, it just stores config.
+        from pod_the_trader.agent.core import _PodTraderAsyncOpenAI
+
+        client = _PodTraderAsyncOpenAI(
+            base_url="https://api.level5.cloud/proxy/x/v1",
+            api_key="level5",
+            max_retries=5,
+        )
+
+        # Stub `options.get_max_retries(self.max_retries)` to return 5.
+        class _StubOptions:
+            def get_max_retries(self, default: int) -> int:
+                return 5
+
+        # No Retry-After header → custom schedule.
+        timeout_first = client._calculate_retry_timeout(
+            remaining_retries=5,
+            options=_StubOptions(),
+            response_headers=None,
+        )
+        assert timeout_first == 2.0
+        timeout_last = client._calculate_retry_timeout(
+            remaining_retries=1,
+            options=_StubOptions(),
+            response_headers=None,
+        )
+        assert timeout_last == 32.0
+
+    def test_override_honors_retry_after_header(
+        self,
+        sample_config: Config,
+        mock_level5: Level5Client,
+        registry,
+        memory,
+    ) -> None:
+        # Within the reasonable range (1-60s) the SDK's policy is to
+        # use whatever the server asks. We preserve that — a Cloudflare
+        # 429 with Retry-After is the server telling us about rate
+        # limits, and ignoring it is impolite + counterproductive.
+        import httpx as _httpx
+
+        from pod_the_trader.agent.core import _PodTraderAsyncOpenAI
+
+        client = _PodTraderAsyncOpenAI(
+            base_url="https://api.level5.cloud/proxy/x/v1",
+            api_key="level5",
+            max_retries=5,
+        )
+
+        class _StubOptions:
+            def get_max_retries(self, default: int) -> int:
+                return 5
+
+        headers = _httpx.Headers({"retry-after": "15"})
+        timeout = client._calculate_retry_timeout(
+            remaining_retries=5,
+            options=_StubOptions(),
+            response_headers=headers,
+        )
+        assert timeout == 15.0
 
 
 class TestSystemPrompt:
@@ -214,7 +309,7 @@ class TestTradeContextRefresh:
 
         lot_ledger = LotLedger(storage_dir=str(tmp_path))
         price_log = PriceLog(storage_dir=str(tmp_path))
-        with patch("pod_the_trader.agent.core.AsyncOpenAI"):
+        with patch("pod_the_trader.agent.core._PodTraderAsyncOpenAI"):
             return TradingAgent(
                 sample_config,
                 mock_level5,
