@@ -296,34 +296,31 @@ class TradingAgent:
             api_key="level5",
         )
 
-    async def bootstrap_context(self) -> None:
-        """Run startup reconciliation and build a summary for the system prompt.
+    def _compose_trade_context(self, current_price: float) -> str:
+        """Build the trade-context summary that gets embedded in the system prompt.
 
-        Async because it needs to hit the RPC to compare on-chain balances
-        against the lot ledger before reading the summary — otherwise the
-        bootstrap block would reflect stale ledger state from before any
-        offline drift was absorbed.
+        Pure synchronous read of the ledger + price log at the given
+        ``current_price``. Returns ``""`` when nothing is available to
+        report. Synchronous on purpose: per-cycle refreshes can reuse
+        the price tick already sampled at the top of the cycle and
+        skip the extra Jupiter call that ``bootstrap_context`` makes.
+
+        Used by both the startup bootstrap (one-shot at process start)
+        and the per-cycle refresh in ``trade_loop`` — the latter is
+        what the 0.3.2 fix is about: without a per-cycle refresh the
+        ``open … @ avg cost $X`` line in the prompt stayed frozen at
+        startup forever, so any FIFO close that shifted avg cost basis
+        was invisible to the model. Symptom: the model reasoning about
+        "underwater" against a stale avg cost while the actual
+        remaining lot has a different basis.
         """
-        # Reconcile offline balance drift before reading any summaries.
-        try:
-            await self._sample_wallet()
-        except Exception as e:
-            logger.debug("Startup reconciliation failed: %s", e)
-
         if self._ledger is None and self._price_log is None and self._lot_ledger is None:
-            return
+            return ""
 
         parts: list[str] = []
-
         target = self._config.get("trading.target_token_address", "")
 
         if self._lot_ledger is not None and target:
-            current_price = 0.0
-            if self._dex is not None:
-                try:
-                    current_price = await self._dex.get_token_price(target)
-                except Exception:
-                    current_price = 0.0
             lot_summary = self._lot_ledger.summary(target, current_price)
             if lot_summary["trade_close_count"] > 0 or lot_summary["open_qty"] > 0:
                 parts.append(
@@ -360,9 +357,55 @@ class TradingAgent:
                     f"volatility {vol:.4f}."
                 )
 
-        if parts:
-            self._memory.set_trade_context(" ".join(parts))
-            logger.info("Bootstrapped agent context: %s", " ".join(parts))
+        return " ".join(parts)
+
+    def _refresh_trade_context_from_price_log(self) -> None:
+        """Per-cycle trade-context refresh using the latest sampled price.
+
+        Called at the top of each cycle after ``_sample_prices`` and
+        ``_sample_wallet`` have run, so the lot-ledger summary reflects
+        the current price and any reconciliation that just happened.
+        Falls back to a zero price if the price log has no tick for
+        the target (e.g. the first cycle on a brand-new install) —
+        unrealized P&L will read $0 in that case but realized P&L and
+        open quantity stay accurate.
+        """
+        target = self._config.get("trading.target_token_address", "")
+        latest_price = 0.0
+        if target and self._price_log is not None:
+            latest = self._price_log.latest(target)
+            if latest is not None:
+                latest_price = latest.price_usd
+        ctx = self._compose_trade_context(latest_price)
+        if ctx:
+            self._memory.set_trade_context(ctx)
+
+    async def bootstrap_context(self) -> None:
+        """Run startup reconciliation and build a summary for the system prompt.
+
+        Async because it needs to hit the RPC to compare on-chain balances
+        against the lot ledger before reading the summary — otherwise the
+        bootstrap block would reflect stale ledger state from before any
+        offline drift was absorbed.
+        """
+        # Reconcile offline balance drift before reading any summaries.
+        try:
+            await self._sample_wallet()
+        except Exception as e:
+            logger.debug("Startup reconciliation failed: %s", e)
+
+        target = self._config.get("trading.target_token_address", "")
+        current_price = 0.0
+        if target and self._dex is not None:
+            try:
+                current_price = await self._dex.get_token_price(target)
+            except Exception:
+                current_price = 0.0
+
+        ctx = self._compose_trade_context(current_price)
+        if ctx:
+            self._memory.set_trade_context(ctx)
+            logger.info("Bootstrapped agent context: %s", ctx)
 
     def _build_system_prompt(self) -> str:
         """Construct the full system prompt with trade context."""
@@ -600,6 +643,14 @@ class TradingAgent:
 
                 # Snapshot on-chain wallet balances
                 await self._sample_wallet()
+
+                # Refresh the trade-context block embedded in the system
+                # prompt so the model sees current avg cost basis,
+                # realized PnL, and price-log stats — not the values
+                # frozen at startup. Bootstrap context alone would let
+                # the model reason against a stale avg cost after any
+                # FIFO close that shifted the open-lot composition.
+                self._refresh_trade_context_from_price_log()
 
                 # Emit cycle-start event to any observer (TUI).
                 self._cycle_count += 1

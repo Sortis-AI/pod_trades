@@ -175,6 +175,136 @@ class TestRunTurn:
         assert result == "No response generated."
 
 
+class TestTradeContextRefresh:
+    """Trade context (the ``Cost-basis ledger ...`` line in the system
+    prompt) must be recomputed at the top of each cycle. Without that,
+    a FIFO close that shifts the open-lot composition is invisible to
+    the model — it reasons against avg cost frozen at bootstrap. This
+    is the bug 0.3.2 fixes.
+    """
+
+    def _make_agent_with_ledger(
+        self,
+        tmp_path,
+        sample_config: Config,
+        mock_level5: Level5Client,
+        registry: ToolRegistry,
+        memory: ConversationMemory,
+    ) -> TradingAgent:
+        from pod_the_trader.data.lot_ledger import LotLedger
+        from pod_the_trader.data.price_log import PriceLog
+
+        lot_ledger = LotLedger(storage_dir=str(tmp_path))
+        price_log = PriceLog(storage_dir=str(tmp_path))
+        with patch("pod_the_trader.agent.core.AsyncOpenAI"):
+            return TradingAgent(
+                sample_config,
+                mock_level5,
+                registry,
+                memory,
+                lot_ledger=lot_ledger,
+                price_log=price_log,
+            )
+
+    def _append_lot(
+        self,
+        ledger,
+        kind: str,
+        qty: float,
+        price: float,
+        target_mint: str,
+        ts: str = "2026-05-14T00:00:00+00:00",
+    ) -> None:
+        from pod_the_trader.data.lot_ledger import LotEvent
+
+        ledger.append(
+            LotEvent(
+                timestamp=ts,
+                mint=target_mint,
+                kind=kind,
+                qty=qty,
+                unit_price_usd=price,
+                source="trade",
+            )
+        )
+
+    def _append_price_tick(self, price_log, mint: str, price: float) -> None:
+        from pod_the_trader.data.price_log import PriceTick, now_iso
+
+        price_log.append(
+            PriceTick(
+                timestamp=now_iso(),
+                mint=mint,
+                symbol="",
+                price_usd=price,
+                source="test",
+            )
+        )
+
+    def test_refresh_updates_avg_cost_after_fifo_close(
+        self,
+        tmp_path,
+        sample_config: Config,
+        mock_level5: Level5Client,
+        registry: ToolRegistry,
+        memory: ConversationMemory,
+    ) -> None:
+        agent = self._make_agent_with_ledger(tmp_path, sample_config, mock_level5, registry, memory)
+        target = sample_config.get("trading.target_token_address")
+
+        # Two open lots — one cheap, one expensive. Weighted blend
+        # produces an avg cost between them.
+        self._append_lot(agent._lot_ledger, "open", 1000.0, 0.0001, target)
+        self._append_lot(agent._lot_ledger, "open", 1000.0, 0.0005, target)
+        self._append_price_tick(agent._price_log, target, 0.0006)
+
+        agent._refresh_trade_context_from_price_log()
+        ctx_before = agent._memory.get_trade_context()
+        assert "avg cost $0.00030000" in ctx_before  # (0.0001 + 0.0005) / 2
+
+        # Close the cheap lot — FIFO eats the older one first. Avg
+        # cost of remaining open lot should jump to $0.0005.
+        self._append_lot(agent._lot_ledger, "close", 1000.0, 0.0007, target)
+        agent._refresh_trade_context_from_price_log()
+        ctx_after = agent._memory.get_trade_context()
+        assert "avg cost $0.00050000" in ctx_after
+        assert ctx_before != ctx_after
+
+    def test_refresh_handles_empty_ledger_gracefully(
+        self,
+        tmp_path,
+        sample_config: Config,
+        mock_level5: Level5Client,
+        registry: ToolRegistry,
+        memory: ConversationMemory,
+    ) -> None:
+        # No lots, no price ticks → no trade_context set, no crash.
+        agent = self._make_agent_with_ledger(tmp_path, sample_config, mock_level5, registry, memory)
+        agent._refresh_trade_context_from_price_log()
+        assert agent._memory.get_trade_context() == ""
+
+    def test_refresh_uses_latest_price_tick(
+        self,
+        tmp_path,
+        sample_config: Config,
+        mock_level5: Level5Client,
+        registry: ToolRegistry,
+        memory: ConversationMemory,
+    ) -> None:
+        agent = self._make_agent_with_ledger(tmp_path, sample_config, mock_level5, registry, memory)
+        target = sample_config.get("trading.target_token_address")
+        self._append_lot(agent._lot_ledger, "open", 1000.0, 0.001, target)
+
+        # Two ticks; the latest one is what should price the unrealized PnL.
+        self._append_price_tick(agent._price_log, target, 0.002)
+        self._append_price_tick(agent._price_log, target, 0.005)
+
+        agent._refresh_trade_context_from_price_log()
+        ctx = agent._memory.get_trade_context()
+        # Unrealized PnL = 1000 × (0.005 − 0.001) = $4.0000 (formatted .4f)
+        assert "unrealized PnL $4.0000" in ctx
+
+
 class TestTradeTracking:
     async def test_trade_count_increments_on_swap(self, agent: TradingAgent) -> None:
         async def swap_handler(args: dict) -> dict:
