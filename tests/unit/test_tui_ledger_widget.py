@@ -122,6 +122,33 @@ class TestSignatureColumnExpansion:
             assert not cell.endswith("…")
 
 
+class TestTotalWidthFitsWidget:
+    """The reason _sig_width_budget measures the other columns instead
+    of using a static estimate: at narrow widths, an undercounted
+    fixed-column total pushed the sig past the panel edge and Textual
+    surfaced a horizontal scrollbar across the entire row. Verify
+    that the sum of every column's rendered width is ≤ the widget
+    width across a representative spread of terminal sizes.
+    """
+
+    @pytest.mark.parametrize("term_width", [80, 100, 120, 160, 200, 240])
+    async def test_no_horizontal_overflow_at_size(
+        self, ledger_with_trade: TradeLedger, term_width: int
+    ) -> None:
+        app = _LedgerHarness(ledger_with_trade)
+        async with app.run_test(size=(term_width, 24)) as pilot:
+            await pilot.pause()
+            widget = app.widget
+            total = sum(col.get_render_width(widget) for col in widget.columns.values())
+            # Sig overhead in the budget gives us a small slack; total
+            # rendered width must never exceed the widget's available
+            # width (which == panel width minus border + padding).
+            assert total <= widget.size.width, (
+                f"Total column width {total} exceeds widget width "
+                f"{widget.size.width} at terminal width {term_width}"
+            )
+
+
 class TestRowClickOpensExplorer:
     async def test_row_selected_opens_correct_url(self, ledger_with_trade: TradeLedger) -> None:
         app = _LedgerHarness(ledger_with_trade)

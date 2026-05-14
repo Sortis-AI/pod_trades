@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 from textual.widgets import DataTable
 
 if TYPE_CHECKING:
+    from textual.widgets._data_table import ColumnKey
+
     from pod_the_trader.data.ledger import TradeEntry, TradeLedger
 
 logger = logging.getLogger(__name__)
@@ -17,6 +19,19 @@ logger = logging.getLogger(__name__)
 # Cap the on-screen sig width here so the column never wastes width
 # on padding past the natural maximum, even on a very wide terminal.
 SOL_SIG_MAX_LEN = 88
+
+# Small allowance for the sig column's own padding plus table chrome
+# (cursor highlight, etc.) so the precise measurement still leaves a
+# few chars of slack — prevents the right edge of the sig from
+# bumping the panel border in any frame.
+SIG_OVERHEAD = 4
+
+# Pre-measurement fallback budget. The widget's first render uses
+# this conservative estimate; on the same on_mount pass we re-measure
+# the actual fixed-column widths and re-render with the precise
+# budget. Underestimating here just means the first frame has a
+# slightly-too-narrow sig column for one tick.
+STATIC_FIXED_FALLBACK = 56
 
 # Block explorer the bot links to when the operator clicks a row.
 ORB_EXPLORER_TX_BASE = "https://orbmarkets.io/tx/"
@@ -31,12 +46,18 @@ class LedgerWidget(DataTable):
     panel has available (truncated with an ellipsis when narrow,
     showing the full signature when wide), and clicking a row opens
     the matching transaction on orbmarkets.io.
+
+    ``overflow-x: hidden`` is set as a belt-and-suspenders guard: even
+    if the budget computation undercounts in some terminal/font
+    combination, a stray extra character clips at the panel border
+    rather than producing a horizontal scrollbar across the row.
     """
 
     DEFAULT_CSS = """
     LedgerWidget {
         height: 1fr;
         background: #0a0f1e;
+        overflow-x: hidden;
     }
     """
 
@@ -56,11 +77,25 @@ class LedgerWidget(DataTable):
         # rebuilds rows when the budget actually changed (resizing the
         # vertical axis doesn't churn the table).
         self._last_sig_width: int = 0
+        # Column keys for the five non-sig columns, captured in
+        # on_mount. Used to measure their actual rendered widths so
+        # the sig budget reflects real layout rather than a fragile
+        # static estimate.
+        self._fixed_column_keys: list[ColumnKey] = []
 
     def on_mount(self) -> None:
-        self.add_columns("#", "time", "side", "tokens", "$ value", "sig")
+        keys = self.add_columns("#", "time", "side", "tokens", "$ value", "sig")
+        # Everything except the trailing "sig" column.
+        self._fixed_column_keys = list(keys[:-1])
         self._last_sig_width = self._sig_width_budget()
         self.refresh_rows()
+        # Re-measure after the first render: now the fixed columns
+        # have real content_widths, so the precise budget may differ
+        # from the static fallback. Re-render once if so.
+        precise = self._sig_width_budget()
+        if precise != self._last_sig_width:
+            self._last_sig_width = precise
+            self.refresh_rows()
 
     def on_resize(self) -> None:
         new_width = self._sig_width_budget()
@@ -101,26 +136,45 @@ class LedgerWidget(DataTable):
         # so prepend to the sig lookup to keep indices aligned.
         self._row_sigs.insert(0, full_sig)
 
+    def _measure_fixed_columns_width(self) -> int:
+        """Sum the actual rendered widths of every non-sig column.
+
+        Returns 0 when the columns haven't been measured yet (e.g.
+        before on_mount finishes). Each column's ``get_render_width``
+        includes its content width plus DataTable's cell padding, so
+        summing them gives the exact horizontal cost of everything
+        the sig column has to share the row with.
+        """
+        if not self._fixed_column_keys:
+            return 0
+        total = 0
+        for key in self._fixed_column_keys:
+            col = self.columns.get(key)
+            if col is None:
+                return 0
+            total += col.get_render_width(self)
+        return total
+
     def _sig_width_budget(self) -> int:
         """Compute the number of characters the sig column gets.
 
-        Subtracts the fixed-content widths of the other columns plus
-        DataTable's inter-column padding from the widget's current
-        width. Returns at least 8 (so the truncated signature always
-        carries enough of the prefix to be recognizable) and at most
-        ``SOL_SIG_MAX_LEN`` (no point reserving width past a full
-        Solana signature). When the widget hasn't been laid out yet
-        (``self.size.width == 0``) returns a reasonable default that
-        the first resize will replace.
+        Prefers a precise measurement of the other columns' actual
+        rendered widths; falls back to a conservative static estimate
+        before the table has been measured. Returns at least 8 (so
+        the truncated signature always carries enough of the prefix
+        to be recognizable) and at most ``SOL_SIG_MAX_LEN`` (no point
+        reserving width past a full Solana signature). When the
+        widget hasn't been laid out yet (``self.size.width == 0``)
+        returns a narrow default that the first resize replaces.
         """
         widget_w = self.size.width
         if widget_w <= 0:
             return 12  # narrow default until the first resize
-        # Approximate fixed-column content widths plus per-column
-        # padding/spacing. DataTable adds ~1 char of separator
-        # between adjacent columns (5 separators for 6 columns).
-        fixed = 3 + 8 + 4 + 14 + 10 + 5  # # + time + side + tokens + $value + paddings
-        budget = widget_w - fixed
+        measured = self._measure_fixed_columns_width()
+        if measured > 0:
+            budget = widget_w - measured - SIG_OVERHEAD
+        else:
+            budget = widget_w - STATIC_FIXED_FALLBACK
         return max(8, min(SOL_SIG_MAX_LEN, budget))
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
