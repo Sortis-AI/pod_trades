@@ -173,13 +173,23 @@ class TestGetBalance:
         assert balance == pytest.approx(1.045045)
 
     @respx.mock
-    async def test_raises_on_failure_even_with_prior_success(self, client: Level5Client) -> None:
+    async def test_raises_on_failure_even_with_prior_success(
+        self, client: Level5Client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # A silent cache-fallback would strand the funding wait with a
         # stale is_active=False if a transient error lands between the
         # deposit and the first successful post-deposit poll. Callers
         # are responsible for retry/tolerance.
+        #
+        # Sleep patched so the post-0.3.6 retry policy (5 retries with
+        # backoff 2/4/8/16/32) doesn't add ~60s of wall clock.
+        async def _no_sleep(_seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr("pod_the_trader.level5.client.asyncio.sleep", _no_sleep)
         respx.get(f"{BASE_URL}/proxy/{TEST_TOKEN}/balance").mock(
             side_effect=[
+                # First call: succeed, seed the cache + return real balance.
                 httpx.Response(
                     200,
                     json={
@@ -188,21 +198,37 @@ class TestGetBalance:
                         "is_active": False,
                     },
                 ),
-                httpx.Response(500),
+                # Subsequent attempts (6 total — initial + 5 retries) all 500.
+                *[httpx.Response(500) for _ in range(6)],
             ]
         )
         balance1 = await client.get_balance()
         assert balance1 == 10.0
         assert client.last_is_active is False
 
-        with pytest.raises(Level5Error, match="Failed to check balance"):
+        # After 0.3.6 the error wrapper is the standard "failed after N
+        # attempts" from the shared retry helper, since get_balance now
+        # routes through _request.
+        with pytest.raises(Level5Error, match="failed after"):
             await client.get_balance()
 
     @respx.mock
-    async def test_raises_without_cache(self, client: Level5Client) -> None:
-        respx.get(f"{BASE_URL}/proxy/{TEST_TOKEN}/balance").mock(return_value=httpx.Response(500))
-        with pytest.raises(Level5Error, match="Failed to check balance"):
+    async def test_raises_without_cache(
+        self, client: Level5Client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _no_sleep(_seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr("pod_the_trader.level5.client.asyncio.sleep", _no_sleep)
+        route = respx.get(f"{BASE_URL}/proxy/{TEST_TOKEN}/balance").mock(
+            return_value=httpx.Response(500)
+        )
+        with pytest.raises(Level5Error, match="failed after"):
             await client.get_balance()
+        # 1 initial attempt + 5 retries = 6 HTTP calls. This is the
+        # invariant that the 0.3.6 fix establishes for get_balance:
+        # previously the call bombed on the first 500 with no retries.
+        assert route.call_count == 6
 
     @respx.mock
     async def test_check_can_afford_true(self, client: Level5Client) -> None:

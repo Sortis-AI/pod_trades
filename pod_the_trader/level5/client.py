@@ -197,22 +197,25 @@ class Level5Client:
         pod-the-trader's startup funding wait uses it as the signal to
         stop polling and start trading.
 
-        Raises ``Level5Error`` on any transport or HTTP failure. Does
-        NOT fall back to cached values: callers all wrap this in their
-        own retry/tolerance logic (the funding orchestrator retries on
-        the configured poll interval; the agent loop logs and continues
-        to the next cycle), and a silent cache fallback here would
-        strand the funding wait with stale ``is_active=False`` when a
+        Routes through :meth:`_request` so transient 5xx and transport
+        errors get the same 5-retry exponential-backoff treatment as
+        the registration path. Without this, a single transient 500
+        (e.g. "internal: cache error" from the proxy under load) would
+        bomb the cycle's balance check on the first attempt and the
+        agent would log + continue without ever retrying — exactly the
+        bug 0.3.6 fixes.
+
+        Raises ``Level5Error`` on any transport or HTTP failure after
+        the configured retries are exhausted. Does NOT fall back to
+        cached values: callers wrap this in their own outer retry/
+        tolerance logic (the funding orchestrator retries on the
+        configured poll interval; the agent loop logs and continues to
+        the next cycle), and a silent cache fallback here would strand
+        the funding wait with stale ``is_active=False`` when a
         transient error lands between the deposit and the first
         successful post-deposit poll.
         """
-        url = f"{self._base_url}/proxy/{self._api_token}/balance"
-        try:
-            response = await self._client.get(url)
-            response.raise_for_status()
-            data = response.json()
-        except Exception as e:
-            raise Level5Error(f"Failed to check balance: {e}") from e
+        data = await self._request("GET", f"/proxy/{self._api_token}/balance")
 
         # usdc_balance and credit_balance are in microunits (6 decimals)
         usdc = int(data.get("usdc_balance", 0))
