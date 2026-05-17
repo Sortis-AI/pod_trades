@@ -9,6 +9,14 @@ import logging
 from textual.widgets import RichLog
 
 
+def _markup_escape(s: str) -> str:
+    # See pod_the_trader/tui/widgets/cycle_status.py for rationale —
+    # rich.markup.escape leaves bracket fragments like `[04-0` (a
+    # `parse_decision` truncation) un-escaped, and the parser still
+    # trips on them. Escaping every `[` is the safe baseline.
+    return s.replace("[", r"\[")
+
+
 class LogTailWidget(RichLog):
     """A RichLog pre-configured for the dashboard log panel.
 
@@ -36,7 +44,12 @@ class LogTailWidget(RichLog):
             "DEBUG": "#556677",
             "TRADE": "#00ff88",
         }.get(level.upper(), "#556677")
-        self.write(f"[{color}]{level:<5}[/] {message}")
+        # Escape the message: log lines routinely contain bracket
+        # patterns ([04-06], list reprs, dict keys) and any unescaped
+        # `[...]` here lights up the markup parser, which then raises
+        # an error that the logging handler tries to write back into
+        # this same widget — an infinite cascade that wedges the TUI.
+        self.write(f"[{color}]{level:<5}[/] {_markup_escape(message)}")
 
 
 class LogTailHandler(logging.Handler):
