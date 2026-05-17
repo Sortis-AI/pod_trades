@@ -103,8 +103,8 @@ class TestSignatureColumnExpansion:
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             widget = app.widget
-            # Pull the sig cell (column 5) of the first row.
-            cell = widget.get_cell_at((0, 5))
+            # Pull the sig cell (column 6) of the first row.
+            cell = widget.get_cell_at((0, 6))
             assert cell.endswith("…")
             # And the stored full signature is the untruncated original
             # so a click still opens the correct URL.
@@ -117,7 +117,7 @@ class TestSignatureColumnExpansion:
         async with app.run_test(size=(200, 24)) as pilot:
             await pilot.pause()
             widget = app.widget
-            cell = widget.get_cell_at((0, 5))
+            cell = widget.get_cell_at((0, 6))
             assert cell == SAMPLE_SIG
             assert not cell.endswith("…")
 

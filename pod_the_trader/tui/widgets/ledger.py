@@ -31,7 +31,7 @@ SIG_OVERHEAD = 4
 # the actual fixed-column widths and re-render with the precise
 # budget. Underestimating here just means the first frame has a
 # slightly-too-narrow sig column for one tick.
-STATIC_FIXED_FALLBACK = 56
+STATIC_FIXED_FALLBACK = 69
 
 # Block explorer the bot links to when the operator clicks a row.
 ORB_EXPLORER_TX_BASE = "https://orbmarkets.io/tx/"
@@ -84,7 +84,7 @@ class LedgerWidget(DataTable):
         self._fixed_column_keys: list[ColumnKey] = []
 
     def on_mount(self) -> None:
-        keys = self.add_columns("#", "time", "side", "tokens", "$ value", "sig")
+        keys = self.add_columns("#", "time", "side", "tokens", "price", "$ value", "sig")
         # Everything except the trailing "sig" column.
         self._fixed_column_keys = list(keys[:-1])
         self._last_sig_width = self._sig_width_budget()
@@ -229,6 +229,15 @@ def _format_trade_row(
     tokens = t.actual_out_ui if side == "BUY" else t.input_amount_ui
     value = t.input_value_usd if side == "BUY" else t.output_value_usd
 
+    # Per-token price in the target token's currency. On a BUY the
+    # target token is on the output leg, on a SELL it's on the input
+    # leg. Older ledger rows can have a zero price field — derive it
+    # from value/tokens so the column never reads "$0.00000000" when
+    # the trade actually had a real price.
+    price = t.output_price_usd if side == "BUY" else t.input_price_usd
+    if price == 0.0 and tokens > 0:
+        price = value / tokens
+
     full_sig = t.signature or ""
     sig_display = _truncate_sig(full_sig, sig_width)
 
@@ -238,6 +247,7 @@ def _format_trade_row(
             short_time,
             f"[{side_color}]{side}[/]",
             f"{tokens:,.2f}",
+            f"${price:.8f}",
             f"${value:,.2f}",
             sig_display,
         ),
