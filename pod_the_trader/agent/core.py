@@ -740,7 +740,14 @@ class TradingAgent:
                     "Analyze current market conditions for the target token. "
                     "Check your portfolio, review recent trades, and decide "
                     "whether to make a trade. If trading, get a quote first "
-                    "and check feasibility."
+                    "and check feasibility.\n\n"
+                    "REQUIRED OUTPUT — your response MUST end with exactly "
+                    "one line in this format:\n"
+                    "  DECISION: <HOLD|BUY|SELL> — <one-sentence reason "
+                    "under 120 chars>\n"
+                    "No exceptions. If your analysis is incomplete, end with "
+                    "`DECISION: HOLD — <why incomplete>` rather than "
+                    "omitting the line."
                 )
                 trade_count_before = self._trade_count
                 response = await self.run_turn(prompt)
