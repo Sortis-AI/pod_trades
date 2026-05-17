@@ -32,6 +32,14 @@ usepod:
 trading:
   target_token_address: "EN2nnxrg8uUi6x2sJkzNPd2eT6rB9rdSoQNNaENA4RZA"
   max_position_size_usdc: 100.0
+  # Per-slice notional cap as a fraction of total portfolio USD value
+  # (SOL + USDC + target token). 0.15 means each slice is at most 15%
+  # of the portfolio, so a $2,000 account caps individual slices at
+  # $300. Replaces the previous hard-coded $150 ceiling: the cap now
+  # grows with the account instead of pinning every account to the
+  # same dollar number. The liquidity guard (`0.015 × liquidity_usd`)
+  # still applies on top — the actual per-slice cap is the minimum.
+  max_slice_pct_of_portfolio: 0.15
   max_slippage_bps: 50
   min_trade_size_usdc: 1.0
   max_daily_trades: 20

@@ -159,7 +159,13 @@ SYSTEM_PROMPT_BASE = (
     "---------\n"
     "Read liquidity_usd from the most recent tick of get_price_history "
     "before any buy.\n"
-    "  - Per-trade notional cap = min($150, 0.015 * liquidity_usd).\n"
+    "  - Per-trade notional cap = min(PER-CYCLE SLICE CAP, "
+    "0.015 * liquidity_usd). The PER-CYCLE SLICE CAP is computed from "
+    "your live portfolio value and shown at the top of every cycle "
+    "prompt (it scales with how much you have on hand). Use that cap "
+    "as the absolute ceiling — do NOT fall back to a hard-coded dollar "
+    "figure if the prompt's portfolio block ever omits it; in that "
+    "edge case, default to the configured fallback_slice_usdc.\n"
     "  - If conviction calls for more than the cap, fire one slice this "
     "cycle and continue on subsequent cycles while the entry conditions "
     "in Section B (or Section A's BUY band) still hold. You are the only "
@@ -486,18 +492,18 @@ class TradingAgent:
             parts.append(f"Max slippage: {self._config.get('trading.max_slippage_bps')} bps")
 
         # Section D fallback: when the upstream price feed doesn't report
-        # liquidity (some Jupiter responses omit it), the formula
-        # `min($150, 0.015 * 0)` collapses to $0 and no trade fits the $1
-        # minimum. Give the model an explicit escape hatch so a missing
-        # field doesn't silently veto every buy in the BUY band.
+        # liquidity (some Jupiter responses omit it), the depth term in
+        # `min(slice_cap, 0.015 * 0)` collapses to $0 and no trade fits
+        # the $1 minimum. Give the model an explicit escape hatch so a
+        # missing field doesn't silently veto every buy in the BUY band.
         fallback_slice = self._config.get("trading.fallback_slice_usdc", 25.0)
         parts.append(
             f"\nSECTION D FALLBACK: If the most recent tick of "
             f"get_price_history reports liquidity_usd = 0 or null, use a "
             f"slice size of ${fallback_slice} USDC instead of the "
-            f"`min($150, 0.015 * liquidity_usd)` formula. This handles "
-            f"the case where the upstream price feed lacks liquidity "
-            f"data; do NOT let a zero reading silently block trading."
+            f"`min(PER-CYCLE SLICE CAP, 0.015 * liquidity_usd)` formula. "
+            f"This handles the case where the upstream price feed lacks "
+            f"liquidity data; do NOT let a zero reading silently block trading."
         )
 
         parts.append(
@@ -729,16 +735,33 @@ class TradingAgent:
                 # portfolio snapshot at the top of the prompt so the model
                 # cannot carry forward stale "SOL balance 0" beliefs from
                 # previous cycles when the wallet has since been refunded.
+                # Also compute the per-cycle slice cap here so the model
+                # never has to redo the arithmetic — a small portfolio
+                # gets a small cap, a large one gets a large cap, and the
+                # cap is anchored to live USD values rather than a frozen
+                # dollar number in the prompt.
                 snapshot_block = ""
                 try:
                     snap = await self._fetch_portfolio_snapshot()
+                    slice_pct = float(
+                        self._config.get("trading.max_slice_pct_of_portfolio", 0.15) or 0.0
+                    )
+                    total_usd = float(snap.get("total_usd", 0.0) or 0.0)
+                    slice_cap_usd = max(0.0, slice_pct * total_usd)
                     snapshot_block = (
                         "AUTHORITATIVE LIVE PORTFOLIO (just fetched, this is ground truth — "
                         "ignore any contradicting numbers in earlier messages):\n"
                         f"  SOL: {snap['sol_ui']:.6f} (${snap['sol_value_usd']:,.4f})\n"
                         f"  target token: {snap['token_ui']:,.4f} "
                         f"(${snap['token_value_usd']:,.4f})\n"
-                        f"  total: ${snap['total_usd']:,.4f}\n\n"
+                        f"  USDC: {snap['usdc_ui']:.4f} (${snap['usdc_value_usd']:,.4f})\n"
+                        f"  total: ${total_usd:,.4f}\n"
+                        f"PER-CYCLE SLICE CAP: ${slice_cap_usd:,.2f} USDC "
+                        f"({slice_pct * 100:.1f}% of total). The notional value "
+                        "of each execute_swap's INPUT leg must not exceed this "
+                        "cap; if the strategy calls for a bigger position, "
+                        "fire one slice this cycle and continue on subsequent "
+                        "cycles.\n\n"
                     )
                 except Exception as e:
                     logger.debug("Could not fetch live snapshot for prompt: %s", e)
