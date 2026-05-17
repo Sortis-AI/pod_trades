@@ -32,11 +32,22 @@ usepod:
 trading:
   target_token_address: "EN2nnxrg8uUi6x2sJkzNPd2eT6rB9rdSoQNNaENA4RZA"
   max_position_size_usdc: 100.0
-  max_slippage_bps: 150
+  max_slippage_bps: 50
   min_trade_size_usdc: 1.0
   max_daily_trades: 20
   cooldown_seconds: 300
   max_price_impact_pct: 1.5
+  # Maximum allowable drift between the first successful swap's
+  # output/input ratio in a cycle and any subsequent swap's quoted
+  # ratio in the same direction. When the model fires multiple slices
+  # inside one LLM turn, each market buy walks the AMM curve — the
+  # per-swap slippage_bps gate doesn't see the cumulative drift. This
+  # guard does: if a follow-up quote returns more than this percentage
+  # less output per input than the first slice's actual fill, the swap
+  # is rejected at the tool layer and the model is asked to HOLD.
+  # 0.5% is roughly one slippage_bps gate's worth — generous enough to
+  # absorb normal pool noise, tight enough to catch self-stacking.
+  cycle_max_drift_pct: 0.5
   # Slice size used when Jupiter doesn't report liquidity_usd on the
   # latest price tick (Section D fallback in the agent system prompt).
   # Keep it conservative — this fires only when depth data is missing,

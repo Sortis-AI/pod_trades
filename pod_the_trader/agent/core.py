@@ -165,9 +165,18 @@ SYSTEM_PROMPT_BASE = (
     "in Section B (or Section A's BUY band) still hold. You are the only "
     "scheduler — there is no order manager. Track slice count and "
     "cumulative notional in your reasoning.\n"
-    "  - slippage_bps=150 on every execute_swap call.\n"
+    "  - slippage_bps=50 on every execute_swap call.\n"
     "  - Always run check_swap_feasibility first. Reject quotes with "
-    "price_impact_pct > 1.5.\n\n"
+    "price_impact_pct > 1.5.\n"
+    "  - The tool layer enforces a cycle-cumulative slippage gate "
+    "(default 0.5%): the first successful swap in a cycle anchors the "
+    "fair execution rate, and any follow-up swap whose quote returns "
+    "noticeably less output per input than that anchor is rejected. "
+    "If execute_swap returns an error mentioning the cycle-cumulative "
+    "slippage gate, STOP slicing this cycle. Wait for the next cycle "
+    "(the AMM will mean-revert) and end the current turn with "
+    "`DECISION: BUY — <reason>` for whatever did fill, or HOLD if "
+    "nothing did.\n\n"
     "E. HARD RULES\n"
     "-------------\n"
     "  - No buys in the HOLD-ONLY band.\n"
@@ -701,6 +710,13 @@ class TradingAgent:
                 # the model reason against a stale avg cost after any
                 # FIFO close that shifted the open-lot composition.
                 self._refresh_trade_context_from_price_log()
+
+                # Reset the per-cycle slippage guard so the first slice
+                # of this cycle establishes a fresh anchor — the AMM has
+                # had a full cooldown to mean-revert since the last one.
+                reset_guard = getattr(self._registry, "_reset_cycle_price_guard", None)
+                if callable(reset_guard):
+                    reset_guard()
 
                 # Emit cycle-start event to any observer (TUI).
                 self._cycle_count += 1

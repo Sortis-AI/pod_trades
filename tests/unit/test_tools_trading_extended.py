@@ -11,7 +11,7 @@ from pod_the_trader.config import Config
 from pod_the_trader.data.ledger import TradeLedger
 from pod_the_trader.tools.registry import ToolRegistry
 from pod_the_trader.tools.trading_tools import register_tools
-from pod_the_trader.trading.dex import JupiterDex, TradeExecution
+from pod_the_trader.trading.dex import JupiterDex, SwapQuote, TradeExecution
 from pod_the_trader.trading.portfolio import Portfolio
 
 SOL_MINT = "So11111111111111111111111111111111111111112"
@@ -32,6 +32,22 @@ def mock_dex() -> JupiterDex:
         return 0.15
 
     dex.get_token_price = AsyncMock(side_effect=_price)
+    # The cycle-slippage guard pre-quotes before every execute_swap;
+    # supply a matching quote so the gate has integer in/out amounts
+    # to compare against. The mock execute_swap below produces the
+    # same in/out figures, so the guard's first-fill anchor is at
+    # exactly the same rate the (only) test swap quotes — no drift.
+    dex.get_quote = AsyncMock(
+        return_value=SwapQuote(
+            input_mint=SOL_MINT,
+            output_mint=TEST_MINT,
+            in_amount=100_000_000,
+            out_amount=50_000_000,
+            price_impact_pct=0.3,
+            slippage_bps=50,
+            raw={},
+        )
+    )
     dex.execute_swap = AsyncMock(
         return_value=TradeExecution(
             success=True,

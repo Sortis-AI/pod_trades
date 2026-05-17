@@ -16,7 +16,7 @@ class TestConfigLoading:
         config_file.write_text(yaml.dump({"trading": {"target_token_address": TEST_TOKEN}}))
         config = Config(str(config_file))
         assert config.get("agent.name") == "Pod The Trader"
-        assert config.get("trading.max_slippage_bps") == 150
+        assert config.get("trading.max_slippage_bps") == 50
 
     def test_deep_merges_user_config(self, tmp_path: Path) -> None:
         config_file = tmp_path / "c.yaml"

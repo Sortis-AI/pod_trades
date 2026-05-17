@@ -24,6 +24,7 @@ from pod_the_trader.data.ledger import (
 )
 from pod_the_trader.data.lot_ledger import LotLedger, emit_trade_events
 from pod_the_trader.tools.registry import ToolRegistry
+from pod_the_trader.trading.cycle_guard import CyclePriceGuard
 from pod_the_trader.trading.dex import SOL_MINT, USDC_MINT, JupiterDex
 from pod_the_trader.trading.portfolio import Portfolio
 from pod_the_trader.tui.publisher import NullPublisher, Publisher
@@ -220,6 +221,12 @@ def register_tools(
     # SOL/USDC aliases without it.
     _symbol_holder: dict[str, str] = {"target": ""}
 
+    # Cycle-cumulative slippage guard — the agent calls reset() at the
+    # top of every cycle so the anchor lifetime matches one LLM turn.
+    cycle_guard = CyclePriceGuard(
+        max_drift_pct=float(config.get("trading.cycle_max_drift_pct", 0.5) or 0.5),
+    )
+
     def set_keypair(kp: Keypair) -> None:
         _keypair_holder["keypair"] = kp
 
@@ -228,6 +235,7 @@ def register_tools(
 
     registry._set_trading_keypair = set_keypair  # type: ignore[attr-defined]
     registry._set_target_symbol = set_target_symbol  # type: ignore[attr-defined]
+    registry._reset_cycle_price_guard = cycle_guard.reset  # type: ignore[attr-defined]
 
     def _resolve_mint(value: str) -> str:
         """Translate a symbol or alias into a real mint address.
@@ -395,6 +403,35 @@ def register_tools(
 
         output_decimals = await _fetch_decimals(output_mint)
 
+        # Cycle-cumulative slippage gate: fetch the would-be quote, compare
+        # its output/input ratio to whatever the first successful slice
+        # anchored, and bail BEFORE submitting if the pool has moved
+        # against us within this cycle. The dex layer re-quotes internally
+        # right before sending the tx, so the actual swap still gets a
+        # fresh quote with the per-swap slippage_bps tolerance — this
+        # check is purely about cumulative drift across slices.
+        try:
+            pre_quote = await jupiter_dex.get_quote(
+                input_mint, output_mint, amount_raw, slippage_bps
+            )
+        except Exception as e:
+            logger.warning("Cycle-guard pre-quote failed (%s); proceeding without it.", e)
+            pre_quote = None
+
+        if pre_quote is not None:
+            gate_err = cycle_guard.check_quote(
+                input_mint, output_mint, pre_quote.in_amount, pre_quote.out_amount
+            )
+            if gate_err:
+                logger.warning(
+                    "Cycle slippage gate rejected swap: %s -> %s amount=%d (%s)",
+                    input_mint[:8],
+                    output_mint[:8],
+                    amount_raw,
+                    gate_err,
+                )
+                return {"error": gate_err}
+
         logger.info(
             "Executing swap: %.6f %s -> %s (raw=%d)",
             amount_ui,
@@ -408,6 +445,15 @@ def register_tools(
         )
 
         if result.success:
+            # Anchor the first successful slice of this cycle so any
+            # follow-up swap in the same direction is gated against it.
+            # Use the actual filled amount (post-slippage) rather than
+            # the quoted amount — that's the ground truth of what this
+            # cycle's "fair rate" turned out to be.
+            anchor_in = result.in_amount
+            anchor_out = result.actual_out_amount or result.out_amount
+            cycle_guard.record_fill(input_mint, output_mint, anchor_in, anchor_out)
+
             # Side is defined relative to the configured target token, not
             # to SOL. A USDC→TARGET swap is a BUY (we acquired target); a
             # TARGET→USDC swap is a SELL. Anything else (SOL→USDC, etc.)
