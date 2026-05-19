@@ -569,6 +569,8 @@ class TradingAgent:
 
         text_parts: list[str] = []
         iterations = 0
+        tool_calls_made = 0
+        plan_nudge_used = False
 
         while iterations < max_iterations:
             if not response.choices:
@@ -603,8 +605,50 @@ class TradingAgent:
                 ]
             self._memory.add_message("assistant", assistant_msg)
 
-            # If no tool calls, we're done
+            # If no tool calls, we're done — unless the model emitted a
+            # plan-without-action: text content describing tool calls it
+            # intends to make (markdown table, "I'll do X, Y, Z…") but
+            # finish_reason=="stop" and no tool_calls ever executed in
+            # this turn. The model treated the planning sentence as the
+            # answer instead of actually invoking the functions. Force
+            # one inline continuation that demands it either acts or
+            # commits to a DECISION — at most once per turn so a model
+            # that's truly stuck doesn't loop us forever.
             if choice.finish_reason != "tool_calls" or not msg.tool_calls:
+                if not plan_nudge_used and tool_calls_made == 0:
+                    combined = "\n".join(text_parts)
+                    action, _ = parse_decision(combined)
+                    if action == "UNKNOWN":
+                        plan_nudge_used = True
+                        logger.warning(
+                            "Cycle %d: model emitted plan-text without tool_calls "
+                            "and without a DECISION; nudging inline.",
+                            self._cycle_count,
+                        )
+                        nudge = (
+                            "You described a plan ('I will call X, then Y, "
+                            "then Z') but did NOT emit any tool_calls. The "
+                            "plan-text is not an execution — the tools only "
+                            "run when you produce structured tool_calls. "
+                            "Either invoke those tools NOW (proper "
+                            "tool_calls output, not a markdown table), or "
+                            "commit to a `DECISION: <HOLD|BUY|SELL> — "
+                            "<reason>` line and stop. Do not write another "
+                            "plan."
+                        )
+                        self._memory.add_message("user", nudge)
+                        messages = [
+                            {"role": "system", "content": system_prompt},
+                            *self._memory.get_messages(),
+                        ]
+                        response = await self._client.chat.completions.create(
+                            model=model,
+                            messages=messages,
+                            tools=tools or None,
+                            max_tokens=max_tokens,
+                        )
+                        iterations += 1
+                        continue
                 break
 
             # Execute tool calls and send results back
@@ -617,6 +661,7 @@ class TradingAgent:
 
                 logger.debug("Tool call: %s(id=%s) %s", fn_name, tc.id, fn_args)
                 result = await self._registry.execute(fn_name, fn_args)
+                tool_calls_made += 1
 
                 self._memory.add_message(
                     "tool",
@@ -723,6 +768,19 @@ class TradingAgent:
                 reset_guard = getattr(self._registry, "_reset_cycle_price_guard", None)
                 if callable(reset_guard):
                     reset_guard()
+
+                # Drop the conversation history that's accumulated across
+                # prior cycles. Each cycle is an independent evaluation
+                # of live data; cross-cycle continuity already lives in
+                # the trade_context block embedded in the system prompt
+                # (lot ledger summary, price-log stats, avg cost basis).
+                # Without this reset, the model started pattern-matching
+                # on prior cycle plan-tables and emitting "I will call X,
+                # Y, Z" markdown instead of actual tool_calls — the new
+                # plan-without-action failure mode that began producing
+                # "missing DECISION" reprompts every cycle. trade_context
+                # is a separate field on memory and is preserved.
+                self._memory.clear()
 
                 # Emit cycle-start event to any observer (TUI).
                 self._cycle_count += 1

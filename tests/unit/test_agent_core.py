@@ -288,6 +288,81 @@ class TestRunTurn:
         assert result == "No response generated."
 
 
+class TestPlanWithoutActionGuard:
+    """When the model emits text describing tool calls but never
+    actually invokes any tool (the plan-without-action failure mode
+    seen against minimax-m2.7), run_turn must nudge once inline and
+    give the model a chance to either act or commit to a DECISION.
+    The guard is bounded — at most one extra LLM call per turn — so a
+    persistently misbehaving model can't loop us forever.
+    """
+
+    async def test_plan_text_without_tool_calls_triggers_nudge(self, agent: TradingAgent) -> None:
+        # First response: a plan-table-style answer with no tool_calls
+        # and no DECISION line — the exact pathology from production.
+        plan_resp = _make_response(
+            content=(
+                "**Gathering fresh market data:**\n"
+                "| step | action |\n"
+                "| 1 | get_market_price |\n"
+                "| 2 | get_price_history |"
+            )
+        )
+        # Second response: model complies with the nudge by emitting a
+        # DECISION line.
+        decision_resp = _make_response(
+            content="DECISION: HOLD — data unavailable, no entry signal."
+        )
+        agent._client.chat.completions.create = AsyncMock(side_effect=[plan_resp, decision_resp])
+
+        result = await agent.run_turn("Cycle prompt")
+
+        # Both responses concatenated; one extra LLM call beyond the
+        # initial one because the guard fired exactly once.
+        assert "DECISION: HOLD" in result
+        assert agent._client.chat.completions.create.call_count == 2
+        # The nudge user message should have been added to memory
+        # between the two LLM calls.
+        second_call_messages = agent._client.chat.completions.create.call_args_list[1].kwargs[
+            "messages"
+        ]
+        assert any(
+            m.get("role") == "user" and "tool_calls" in (m.get("content") or "")
+            for m in second_call_messages
+        )
+
+    async def test_plan_guard_fires_at_most_once(self, agent: TradingAgent) -> None:
+        # A model that keeps emitting plan-text with no tools and no
+        # DECISION must not trap us in a nudge loop. The guard fires
+        # exactly once per run_turn and then lets the loop exit with
+        # whatever text accumulated — the downstream
+        # _enforce_decision_format will reprompt at the trade_loop
+        # level if needed.
+        bad_resp = _make_response(content="I will call X, Y, Z next.")
+        agent._client.chat.completions.create = AsyncMock(return_value=bad_resp)
+
+        result = await agent.run_turn("Cycle prompt")
+
+        assert "I will call X" in result
+        # Exactly two calls: the initial one plus the single nudge.
+        assert agent._client.chat.completions.create.call_count == 2
+
+    async def test_guard_skipped_when_tool_was_called(self, agent: TradingAgent) -> None:
+        # If the model successfully called any tool during the turn,
+        # plan-without-action by definition didn't happen — the guard
+        # must not fire even if the final response lacks a DECISION.
+        tc = _make_tool_call("call_1", "test_tool", '{"x": "hi"}')
+        tool_resp = _make_response(tool_calls=[tc], finish_reason="tool_calls")
+        final_resp = _make_response(content="Tool ran, but no decision yet.")
+        agent._client.chat.completions.create = AsyncMock(side_effect=[tool_resp, final_resp])
+
+        await agent.run_turn("Use a tool")
+
+        # Exactly two calls: the tool-call round-trip. The guard saw
+        # tool_calls_made > 0 and stayed silent.
+        assert agent._client.chat.completions.create.call_count == 2
+
+
 class TestTradeContextRefresh:
     """Trade context (the ``Cost-basis ledger ...`` line in the system
     prompt) must be recomputed at the top of each cycle. Without that,
@@ -493,7 +568,12 @@ class TestLowBalance:
         agent._client.chat.completions.create = AsyncMock(return_value=text_resp)
 
         result = await agent.run_turn("Check status")
-        assert result == "OK"
+        # The plan-without-action guard fires when a response carries no
+        # DECISION and no tool_calls (a benign "OK" qualifies), so
+        # run_turn nudges once and concatenates both responses. We
+        # don't care which form the result takes — just that the call
+        # didn't crash and the model's content propagated through.
+        assert "OK" in result
 
 
 class TestDecisionExecutionEnforcement:
