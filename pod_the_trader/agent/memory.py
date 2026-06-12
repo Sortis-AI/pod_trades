@@ -39,8 +39,29 @@ class ConversationMemory:
             self._messages.append({"role": role, "content": serialized})
 
     def get_messages(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Return the last N messages."""
-        return self._messages[-limit:]
+        """Return the last N messages, never starting mid-tool-chain.
+
+        The naive ``self._messages[-limit:]`` slice can begin on a
+        ``tool`` result whose parent ``assistant`` message (the one that
+        declared the matching ``tool_calls``) fell outside the window.
+        A request that leads with such an orphaned tool result is
+        rejected upstream — Minimax answers ``invalid params, tool
+        result's tool id(...) not found`` and the proxy returns an empty
+        ``choices: null`` body. This bites in high-tool-volume cycles
+        (20+ tool calls) where the history overflows ``limit``.
+
+        We drop any leading ``tool`` messages from the window so it
+        always begins on a clean boundary (user, or assistant). Tool
+        results only ever follow their parent assistant, so trimming
+        from the front is sufficient — a surviving assistant keeps its
+        results, and an excluded assistant takes all of its orphaned
+        results with it.
+        """
+        window = self._messages[-limit:]
+        start = 0
+        while start < len(window) and window[start].get("role") == "tool":
+            start += 1
+        return window[start:]
 
     def clear(self) -> None:
         """Clear all messages."""

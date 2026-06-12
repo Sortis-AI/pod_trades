@@ -34,7 +34,58 @@ class TestMessageManagement:
         memory.add_message("user", "Test")
         memory.clear()
         assert memory.message_count == 0
-        assert memory.get_messages() == []
+
+    def test_window_never_starts_with_orphaned_tool_message(
+        self, memory: ConversationMemory
+    ) -> None:
+        # Regression for the UsePod/Minimax "tool result's tool id not
+        # found" 400s: in a high-tool-volume cycle the last-N window
+        # could begin on a `tool` result whose parent assistant fell
+        # outside the window. Such a leading orphan must be trimmed.
+        memory.add_message(
+            "assistant",
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_old",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+        )
+        memory.add_message("tool", {"role": "tool", "tool_call_id": "call_old", "content": "r"})
+        memory.add_message("user", "next")
+        memory.add_message("assistant", "answer")
+
+        # A window that slices off the parent assistant would start on
+        # the orphaned tool result; get_messages must drop it.
+        window = memory.get_messages(limit=3)
+        assert window[0]["role"] != "tool"
+        # No tool message in the window lacks its parent assistant.
+        assert all(m.get("role") != "tool" for m in window)
+
+    def test_window_keeps_complete_leading_tool_chain(self, memory: ConversationMemory) -> None:
+        # When the parent assistant IS inside the window, the chain is
+        # complete and must be preserved untouched.
+        memory.add_message(
+            "assistant",
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_x",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+        )
+        memory.add_message("tool", {"role": "tool", "tool_call_id": "call_x", "content": "r"})
+        window = memory.get_messages(limit=5)
+        assert window[0]["role"] == "assistant"
+        assert window[1]["role"] == "tool"
 
 
 class TestPersistence:
