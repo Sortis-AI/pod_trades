@@ -261,6 +261,33 @@ def register_tools(
             return config.get("trading.target_token_address", "") or value
         return value
 
+    def _require_mints(args: dict[str, Any]) -> tuple[str, str, str | None]:
+        """Resolve input/output mints from args, with a clean error.
+
+        The model occasionally calls a swap tool omitting one of the
+        required mint args. Reading ``args["input_mint"]`` directly then
+        raises a bare ``KeyError('input_mint')`` that surfaces as an
+        opaque "Tool execution failed: KeyError…" with no guidance.
+        Returning a worded error instead lets the model recover by
+        re-issuing the call with the missing field.
+        """
+        in_raw = args.get("input_mint")
+        out_raw = args.get("output_mint")
+        missing = [
+            name for name, val in (("input_mint", in_raw), ("output_mint", out_raw)) if not val
+        ]
+        if missing:
+            return (
+                "",
+                "",
+                (
+                    f"Missing required argument(s): {', '.join(missing)}. "
+                    "Pass the FULL base58 mint address for both input_mint "
+                    "and output_mint (SOL=" + SOL_MINT + ", USDC=" + USDC_MINT + ")."
+                ),
+            )
+        return _resolve_mint(in_raw), _resolve_mint(out_raw), None
+
     def _check_route(input_mint: str, output_mint: str) -> str | None:
         """Reject swap routes outside the allowed universe.
 
@@ -321,8 +348,9 @@ def register_tools(
         return None
 
     async def get_swap_quote(args: dict[str, Any]) -> dict[str, Any]:
-        input_mint = _resolve_mint(args["input_mint"])
-        output_mint = _resolve_mint(args["output_mint"])
+        input_mint, output_mint, mint_err = _require_mints(args)
+        if mint_err:
+            return {"error": mint_err}
         if route_err := _check_route(input_mint, output_mint):
             return {"error": route_err}
         slippage_bps = int(args.get("slippage_bps", config.get("trading.max_slippage_bps", 50)))
@@ -385,8 +413,9 @@ def register_tools(
         if keypair is None:
             return {"error": "Trading keypair not configured"}
 
-        input_mint = _resolve_mint(args["input_mint"])
-        output_mint = _resolve_mint(args["output_mint"])
+        input_mint, output_mint, mint_err = _require_mints(args)
+        if mint_err:
+            return {"error": mint_err}
         if route_err := _check_route(input_mint, output_mint):
             return {"error": route_err}
         slippage_bps = int(args.get("slippage_bps", config.get("trading.max_slippage_bps", 50)))
@@ -669,8 +698,9 @@ def register_tools(
     )
 
     async def check_swap_feasibility(args: dict[str, Any]) -> dict[str, Any]:
-        input_mint = _resolve_mint(args["input_mint"])
-        output_mint = _resolve_mint(args["output_mint"])
+        input_mint, output_mint, mint_err = _require_mints(args)
+        if mint_err:
+            return {"error": mint_err}
         if route_err := _check_route(input_mint, output_mint):
             return {"error": route_err}
         max_impact = args.get(

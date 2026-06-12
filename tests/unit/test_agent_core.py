@@ -363,6 +363,73 @@ class TestPlanWithoutActionGuard:
         assert agent._client.chat.completions.create.call_count == 2
 
 
+class TestSwapResultAccounting:
+    """A failed execute_swap must not bump the trade counter, and an
+    identical swap that already failed this turn must not be re-dispatched
+    to the chain — both are graceful-handling fixes for the thin-pool
+    slippage rejections seen in production.
+    """
+
+    def _register_swap(self, agent: TradingAgent, results: list[dict]) -> dict:
+        """Register an execute_swap tool that yields ``results`` in order
+        (repeating the last once exhausted) and records call count.
+        """
+        state = {"calls": 0}
+
+        async def handler(args: dict) -> dict:
+            i = min(state["calls"], len(results) - 1)
+            state["calls"] += 1
+            return results[i]
+
+        agent._registry.register(
+            "execute_swap",
+            "Execute a swap",
+            {"type": "object", "properties": {}},
+            handler,
+        )
+        return state
+
+    async def test_failed_swap_does_not_count_as_trade(self, agent: TradingAgent) -> None:
+        self._register_swap(agent, [{"success": False, "error": "slippage exceeded"}])
+        swap_args = '{"input_mint": "So1", "output_mint": "EN2", "amount_in": 25}'
+        tc = _make_tool_call("call_s", "execute_swap", swap_args)
+        swap_resp = _make_response(tool_calls=[tc], finish_reason="tool_calls")
+        final_resp = _make_response(content="DECISION: HOLD — swap failed.")
+        agent._client.chat.completions.create = AsyncMock(side_effect=[swap_resp, final_resp])
+
+        await agent.run_turn("cycle")
+        assert agent._trade_count == 0
+
+    async def test_successful_swap_counts_once(self, agent: TradingAgent) -> None:
+        self._register_swap(agent, [{"success": True, "signature": "sig"}])
+        swap_args = '{"input_mint": "So1", "output_mint": "EN2", "amount_in": 25}'
+        tc = _make_tool_call("call_s", "execute_swap", swap_args)
+        swap_resp = _make_response(tool_calls=[tc], finish_reason="tool_calls")
+        final_resp = _make_response(content="DECISION: BUY — entered.")
+        agent._client.chat.completions.create = AsyncMock(side_effect=[swap_resp, final_resp])
+
+        await agent.run_turn("cycle")
+        assert agent._trade_count == 1
+
+    async def test_repeat_failed_swap_is_short_circuited(self, agent: TradingAgent) -> None:
+        # Same swap args fired in two consecutive iterations. The handler
+        # must run only ONCE; the second is served from the failed-swap
+        # cache without hitting the (mock) chain.
+        state = self._register_swap(agent, [{"success": False, "error": "slippage exceeded"}])
+        swap_args = '{"input_mint": "So1", "output_mint": "EN2", "amount_in": 25}'
+        tc1 = _make_tool_call("call_s1", "execute_swap", swap_args)
+        tc2 = _make_tool_call("call_s2", "execute_swap", swap_args)
+        resp1 = _make_response(tool_calls=[tc1], finish_reason="tool_calls")
+        resp2 = _make_response(tool_calls=[tc2], finish_reason="tool_calls")
+        final_resp = _make_response(content="DECISION: HOLD — gave up retrying.")
+        agent._client.chat.completions.create = AsyncMock(side_effect=[resp1, resp2, final_resp])
+
+        await agent.run_turn("cycle")
+        # Handler invoked exactly once despite two tool_calls.
+        assert state["calls"] == 1
+        assert agent._trade_count == 0
+
+
 class TestTradeContextRefresh:
     """Trade context (the ``Cost-basis ledger ...`` line in the system
     prompt) must be recomputed at the top of each cycle. Without that,

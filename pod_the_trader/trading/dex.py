@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +17,60 @@ logger = logging.getLogger(__name__)
 
 SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+# Known on-chain swap-failure codes, mapped to a short actionable hint. The
+# target token routes through the Pump.fun AMM, whose reverts surface as
+# `custom program error: 0xNNNN` wrapped inside multi-KB program-log blobs.
+# Those blobs belong at DEBUG, not in the model's context window or the
+# operator's ERROR line — classify_swap_error distills them to one line.
+_SWAP_ERROR_HINTS: dict[str, str] = {
+    "0x1771": "slippage exceeded — pool moved beyond tolerance before the tx landed",
+    "0x1772": "zero-quote / insufficient liquidity at execution (transient pool state)",
+    "0xffff": "route slippage tolerance exceeded",
+    "0x1786": "AMM rejected the swap (pool constraint)",
+    "0x1788": "AMM rejected the swap (pool constraint)",
+    "0x178c": "AMM rejected the swap (pool constraint)",
+}
+
+_CUSTOM_ERR_RE = re.compile(r"custom program error: (0x[0-9a-fA-F]+)", re.IGNORECASE)
+_INSTR_ERR_RE = re.compile(r"Custom\((\d+)\)")
+
+
+def classify_swap_error(raw: str) -> str:
+    """Distill a raw Solana/Jupiter swap failure into one actionable line.
+
+    The raw exception (or on-chain status err) can be several KB of program
+    logs. We extract the meaningful custom-error code, map it to a hint, and
+    flag preflight rejections (which cost no gas and are safe to retry on a
+    later cycle) distinctly from landed reverts (which burned gas).
+    """
+    if not raw:
+        return "swap failed (no detail)"
+    lowered = raw.lower()
+    preflight = "simulation failed" in lowered
+
+    # `custom program error: 0xNNNN` (preflight) or `Custom(NNNN)` (landed).
+    code: str | None = None
+    if m := _CUSTOM_ERR_RE.search(raw):
+        code = m.group(1).lower()
+    elif m := _INSTR_ERR_RE.search(raw):
+        code = hex(int(m.group(1)))
+
+    parts: list[str] = []
+    if code and code in _SWAP_ERROR_HINTS:
+        parts.append(_SWAP_ERROR_HINTS[code])
+    elif code:
+        parts.append(f"on-chain swap rejected (code {code})")
+    else:
+        first = raw.split("{")[0].split(",")[0].strip()
+        parts.append(first[:120] or "swap failed")
+
+    parts.append(
+        "preflight rejection — no gas spent, safe to retry a later cycle"
+        if preflight
+        else "landed on-chain and reverted (gas spent)"
+    )
+    return "; ".join(parts)
 
 
 @dataclass
@@ -155,9 +210,15 @@ class JupiterDex:
             signed_tx = VersionedTransaction(tx.message, [keypair])
 
             sig = await self._tx_builder.send_versioned_transaction(signed_tx)
-            confirmed = await self._tx_builder.confirm_transaction(sig)
+            confirmed, confirm_err = await self._tx_builder.confirm_transaction(sig)
 
             if not confirmed:
+                # Distinguish a landed-and-reverted tx (confirm_err set —
+                # gas was spent) from a genuine timeout (confirm_err None).
+                if confirm_err is not None:
+                    err_msg = classify_swap_error(confirm_err)
+                else:
+                    err_msg = "transaction not confirmed within timeout (never landed)"
                 return TradeExecution(
                     success=False,
                     signature=sig,
@@ -167,7 +228,7 @@ class JupiterDex:
                     out_amount=quote.out_amount,
                     price_impact_pct=quote.price_impact_pct,
                     slippage_bps_requested=slippage_bps,
-                    error="Transaction not confirmed within timeout",
+                    error=err_msg,
                 )
 
             # Enrich with on-chain data: gas fee + actual amounts
@@ -190,12 +251,18 @@ class JupiterDex:
                 slippage_bps_requested=slippage_bps,
             )
         except Exception as e:
-            logger.error("Swap execution failed: %s", e)
+            # Short, classified line at WARNING for the operator; the full
+            # multi-KB preflight blob only at DEBUG. The model receives the
+            # short form via TradeExecution.error so its context isn't
+            # flooded with program logs it can't act on.
+            detail = classify_swap_error(str(e))
+            logger.warning("Swap execution failed: %s", detail)
+            logger.debug("Swap execution failure (full detail): %s", e)
             return TradeExecution(
                 success=False,
                 input_mint=input_mint,
                 output_mint=output_mint,
-                error=str(e),
+                error=detail,
             )
 
     async def get_token_price(self, mint_address: str) -> float:

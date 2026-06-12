@@ -70,7 +70,7 @@ class TestConfirmTransaction:
         ):
             result = await builder.confirm_transaction(FAKE_SIG)
 
-        assert result is True
+        assert result == (True, None)
 
     async def test_returns_false_on_error(self, builder: TransactionBuilder) -> None:
         mock_client = AsyncMock()
@@ -88,7 +88,9 @@ class TestConfirmTransaction:
         ):
             result = await builder.confirm_transaction(FAKE_SIG)
 
-        assert result is False
+        # Landed-and-reverted: confirmed False, with the on-chain error.
+        assert result[0] is False
+        assert result[1] is not None
 
     async def test_returns_false_on_timeout(self, builder: TransactionBuilder) -> None:
         mock_client = AsyncMock()
@@ -104,4 +106,5 @@ class TestConfirmTransaction:
         ):
             result = await builder.confirm_transaction(FAKE_SIG, timeout=0.1)
 
-        assert result is False
+        # Genuine timeout: confirmed False, no on-chain error.
+        assert result == (False, None)

@@ -67,8 +67,16 @@ class TransactionBuilder:
         self,
         signature: str,
         timeout: float = 60.0,
-    ) -> bool:
-        """Wait for a transaction to be confirmed. Returns True if confirmed."""
+    ) -> tuple[bool, str | None]:
+        """Wait for a transaction to be confirmed.
+
+        Returns ``(confirmed, error_detail)``:
+          - ``(True, None)``  — landed and succeeded.
+          - ``(False, "<err>")`` — landed and reverted; the on-chain
+            error is returned so the caller can report *why* instead of
+            a misleading "not confirmed within timeout".
+          - ``(False, None)`` — genuinely timed out (never landed).
+        """
         async with AsyncClient(self._rpc_url) as client:
             start = time.monotonic()
             from solders.signature import Signature
@@ -81,21 +89,21 @@ class TransactionBuilder:
                 if statuses and statuses[0] is not None:
                     if statuses[0].err is None:
                         logger.info("Transaction confirmed: %s", signature)
-                        return True
+                        return True, None
                     else:
                         logger.error(
                             "Transaction failed: %s, error: %s",
                             signature,
                             statuses[0].err,
                         )
-                        return False
+                        return False, str(statuses[0].err)
 
                 import asyncio
 
                 await asyncio.sleep(2)
 
         logger.warning("Transaction confirmation timed out: %s", signature)
-        return False
+        return False, None
 
     async def send_versioned_transaction(
         self,

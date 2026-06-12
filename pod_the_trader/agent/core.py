@@ -306,6 +306,42 @@ def parse_decision(response: str) -> tuple[str, str]:
     return "UNKNOWN", "(no response)"
 
 
+def _swap_dedup_key(fn_args: dict) -> str:
+    """Stable key identifying an execute_swap call for in-turn dedup.
+
+    Keys on the route plus whichever sizing field the model used. Two
+    calls with the same route and size collapse to one key so a repeat
+    of an already-failed swap is recognized regardless of arg ordering.
+    """
+    return json.dumps(
+        {
+            "input_mint": fn_args.get("input_mint"),
+            "output_mint": fn_args.get("output_mint"),
+            "amount_in": fn_args.get("amount_in"),
+            "amount_in_raw": fn_args.get("amount_in_raw"),
+            "percent_of_balance": fn_args.get("percent_of_balance"),
+        },
+        sort_keys=True,
+        default=str,
+    )
+
+
+def _result_indicates_success(result: str) -> bool:
+    """True only if a tool result JSON string reports an executed swap.
+
+    A swap tool returns ``{"success": true, ...}`` on a confirmed fill
+    and ``{"success": false, "error": ...}`` (or an ``{"error": ...}``
+    envelope from the registry's exception handler) otherwise. Anything
+    we can't parse as an explicit success is treated as a non-fill so
+    the trade counter never over-reports.
+    """
+    try:
+        data = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(data, dict) and data.get("success") is True
+
+
 class TradingAgent:
     """LLM-powered trading agent using OpenAI-compatible chat completions."""
 
@@ -571,6 +607,13 @@ class TradingAgent:
         iterations = 0
         tool_calls_made = 0
         plan_nudge_used = False
+        # Identical execute_swap calls that already failed this turn. The
+        # model otherwise re-fires the same rejected swap up to 3x in a
+        # cycle (seen in production: a thin-pool slippage revert hammered
+        # back-to-back), burning iterations against an order the AMM won't
+        # honor. We short-circuit a repeat with the cached error instead
+        # of hitting the chain again.
+        failed_swaps: set[str] = set()
 
         while iterations < max_iterations:
             if not response.choices:
@@ -660,7 +703,28 @@ class TradingAgent:
                     fn_args = {}
 
                 logger.debug("Tool call: %s(id=%s) %s", fn_name, tc.id, fn_args)
-                result = await self._registry.execute(fn_name, fn_args)
+
+                swap_key = _swap_dedup_key(fn_args) if fn_name == "execute_swap" else None
+                if swap_key is not None and swap_key in failed_swaps:
+                    # Identical swap already failed this turn — don't retry.
+                    logger.info(
+                        "Cycle %d: skipping repeat of already-failed swap %s",
+                        self._cycle_count,
+                        swap_key,
+                    )
+                    result = json.dumps(
+                        {
+                            "success": False,
+                            "error": (
+                                "This exact swap already failed earlier this "
+                                "turn and was not retried. Do not re-issue it — "
+                                "resize the amount, change the route, or commit "
+                                "to DECISION: HOLD for this cycle."
+                            ),
+                        }
+                    )
+                else:
+                    result = await self._registry.execute(fn_name, fn_args)
                 tool_calls_made += 1
 
                 self._memory.add_message(
@@ -669,8 +733,17 @@ class TradingAgent:
                 )
 
                 if fn_name == "execute_swap":
-                    self._trade_count += 1
-                    self._last_trade_time = time.time()
+                    # Only count a swap that actually landed. A failed swap
+                    # (preflight reject, on-chain revert) must NOT bump the
+                    # trade counter — _enforce_decision_execution relies on
+                    # the counter to tell whether a BUY/SELL decision was
+                    # backed by a real fill.
+                    swap_ok = _result_indicates_success(result)
+                    if swap_ok:
+                        self._trade_count += 1
+                        self._last_trade_time = time.time()
+                    elif swap_key is not None:
+                        failed_swaps.add(swap_key)
 
             # Continue the conversation
             messages = [

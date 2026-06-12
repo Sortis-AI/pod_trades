@@ -165,3 +165,20 @@ class TestExecuteSwapWithKeypair:
         )
         assert result["success"] is False
         assert len(ledger.read_all()) == 0
+
+    async def test_missing_mint_returns_clean_error(
+        self,
+        registry_with_keypair: ToolRegistry,
+    ) -> None:
+        # Model omits output_mint. Instead of a bare KeyError surfacing
+        # as "Tool execution failed: KeyError('output_mint')", the tool
+        # returns a worded error the model can act on.
+        result = json.loads(
+            await registry_with_keypair.execute(
+                "execute_swap",
+                {"input_mint": SOL_MINT, "amount_in": 0.1},
+            )
+        )
+        assert "error" in result
+        assert "output_mint" in result["error"]
+        assert "KeyError" not in result["error"]

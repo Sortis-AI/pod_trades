@@ -7,7 +7,12 @@ import pytest
 import respx
 from solders.keypair import Keypair
 
-from pod_the_trader.trading.dex import JupiterDex, JupiterError, SwapQuote
+from pod_the_trader.trading.dex import (
+    JupiterDex,
+    JupiterError,
+    SwapQuote,
+    classify_swap_error,
+)
 
 QUOTE_URL = "https://api.jup.ag/swap/v1"
 PRICE_URL = "https://lite-api.jup.ag/price/v3"
@@ -106,7 +111,7 @@ class TestExecuteSwap:
         )
 
         mock_send = AsyncMock(return_value="swapsig123")
-        mock_confirm = AsyncMock(return_value=True)
+        mock_confirm = AsyncMock(return_value=(True, None))
         dex._tx_builder.send_versioned_transaction = mock_send
         dex._tx_builder.confirm_transaction = mock_confirm
 
@@ -274,3 +279,44 @@ class TestCheckFeasibility:
         result = await dex.check_feasibility(SOL_MINT, USDC_MINT, 1_000_000_000, max_impact_pct=5.0)
         assert result.feasible is False
         assert result.price_impact_pct == 8.5
+
+
+class TestClassifySwapError:
+    """classify_swap_error distills multi-KB preflight blobs into one
+    actionable line so the model's context isn't flooded and the
+    operator log stays scannable.
+    """
+
+    def test_preflight_slippage_code_maps_to_hint(self) -> None:
+        raw = (
+            'SendTransactionPreflightFailureMessage { message: "Transaction '
+            "simulation failed: Error processing Instruction 3: custom "
+            'program error: 0x1771", data: ... }'
+        )
+        out = classify_swap_error(raw)
+        assert "slippage exceeded" in out
+        assert "no gas spent" in out  # flagged as preflight
+
+    def test_zero_quote_code(self) -> None:
+        raw = "Transaction simulation failed: custom program error: 0x1772"
+        out = classify_swap_error(raw)
+        assert "zero-quote" in out or "insufficient liquidity" in out
+        assert "no gas spent" in out
+
+    def test_landed_revert_custom_instruction_error(self) -> None:
+        # The on-chain status err form: Custom(6001) without "simulation
+        # failed" → landed, gas spent.
+        raw = "InstructionError((3, Tagged(InstructionErrorCustom(6001))))"
+        out = classify_swap_error(raw)
+        # 6001 == 0x1771 → slippage hint, flagged as landed.
+        assert "slippage exceeded" in out
+        assert "gas spent" in out
+        assert "no gas spent" not in out
+
+    def test_unknown_code_is_reported_verbatim(self) -> None:
+        raw = "Transaction simulation failed: custom program error: 0xdead"
+        out = classify_swap_error(raw)
+        assert "0xdead" in out
+
+    def test_empty_is_safe(self) -> None:
+        assert "no detail" in classify_swap_error("")
