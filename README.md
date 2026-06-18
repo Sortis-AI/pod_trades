@@ -65,7 +65,9 @@ Level5 and UsePod expose a byte-identical API surface (UsePod is a Rust port of 
 - `per_request_cap_usdc` (default `0.50`) — reject any single 402 quote above this; the cycle aborts rather than overpay a malformed/hostile quote.
 - `max_daily_x402_spend_usdc` (default `10.0`) — once cumulative x402 spend in a UTC day reaches this, inference pauses until the next day.
 
-Inference spend competes with trading capital in the same wallet (`min_balance_threshold_usdc` gates it). There's no dashboard — spend is visible on-chain. **First-use note:** the on-chain settlement follows the canonical x402 exact-SVM scheme; validate with a single live call before relying on it for sustained spend (the per-request cap bounds the risk).
+Inference spend competes with trading capital in the same wallet (`min_balance_threshold_usdc` gates it). There's no dashboard — spend is visible on-chain.
+
+UsePod's x402 runs in `cap-with-surplus-credit` mode: a payment charges your actual usage and credits the unused remainder (cap − actual) to a balance keyed to your wallet, applied to later calls — so **one payment typically funds many requests** and the bot pays only when a fresh `402` arrives. Because the quoted `amount_microunits` is a *cap pre-authorization* (the full amount leaves the wallet on-chain; the surplus is recoverable only as future inference credit, not a refund), set `per_request_cap_usdc` **at or above the gateway's cap quote** — if x402 calls keep aborting on the per-request cap, raise it.
 
 You can pick a provider three ways, listed in increasing precedence:
 
