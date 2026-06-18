@@ -133,11 +133,18 @@ class Level5Auth:
         The default is the active provider (from CLI/config). Pressing
         enter without a choice accepts the default.
         """
-        ordered = [PROVIDERS[Provider.LEVEL5.value], PROVIDERS[Provider.USEPOD.value]]
+        ordered = [
+            PROVIDERS[Provider.LEVEL5.value],
+            PROVIDERS[Provider.USEPOD.value],
+            PROVIDERS[Provider.USEPOD_X402.value],
+        ]
         print("\n=== Choose an LLM-proxy provider ===")
         for idx, cfg in enumerate(ordered, start=1):
             marker = " (default)" if cfg.key == default.key else ""
-            print(f"{idx}. {cfg.display_name}{marker}")
+            extra = ""
+            if cfg.accountless:
+                extra = " — no account; pays per request from your Solana wallet"
+            print(f"{idx}. {cfg.display_name}{marker}{extra}")
         choice = input(f"\nSelect (1-{len(ordered)}, default {default.display_name}): ").strip()
         if not choice:
             return default
@@ -153,6 +160,23 @@ class Level5Auth:
 
     def _interactive_menu(self, default_provider: ProviderConfig) -> Level5Credentials | None:
         chosen = self._prompt_provider(default_provider)
+
+        # Accountless (x402): nothing to register and no token to enter —
+        # the local Solana wallet is the identity and pays per request.
+        # Persist a credentials record (provider only) so subsequent runs
+        # skip the wizard, mirroring the token-based providers.
+        if chosen.accountless:
+            print(f"\n=== {chosen.display_name} ===")
+            print(
+                "No account or API token needed. Each inference request is "
+                "paid per call from your local Solana wallet over x402.\n"
+                "Spend is bounded by the per-request and daily caps in the "
+                f"`{chosen.key}` config section (edit defaults.yaml to change)."
+            )
+            creds = Level5Credentials(api_token="", provider=chosen.key)
+            self.save(creds)
+            print(f"{chosen.display_name} selected.")
+            return creds
 
         print(f"\n=== {chosen.display_name} Setup ===")
         print(f"1. Register a new {chosen.display_name} account")

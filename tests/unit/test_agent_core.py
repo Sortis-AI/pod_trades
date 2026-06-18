@@ -38,11 +38,16 @@ def _make_response(
 
 @pytest.fixture()
 def mock_level5() -> Level5Client:
+    from pod_the_trader.level5.provider import resolve_provider
+
     client = MagicMock(spec=Level5Client)
     client.is_registered.return_value = True
     client.get_api_base_url.return_value = "https://api.level5.cloud/v1/tok/proxy"
     client._api_token = "test_token"
     client.get_balance = AsyncMock(return_value=10.0)
+    # A real (token-based, non-accountless) provider so the agent's
+    # construction-time provider gate doesn't see a truthy MagicMock.
+    client.provider = resolve_provider("level5")
     return client
 
 
@@ -80,9 +85,12 @@ def agent(
 
 class TestConstruction:
     def test_raises_without_level5(self, sample_config: Config, registry, memory) -> None:
+        from pod_the_trader.level5.provider import resolve_provider
+
         mock_l5 = MagicMock(spec=Level5Client)
         mock_l5.is_registered.return_value = False
-        with pytest.raises(ValueError, match="Level5 registration required"):
+        mock_l5.provider = resolve_provider("level5")
+        with pytest.raises(ValueError, match="not usable"):
             TradingAgent(sample_config, mock_l5, registry, memory)
 
     def test_openai_client_constructed_with_5_retries(

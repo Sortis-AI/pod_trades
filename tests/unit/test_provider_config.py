@@ -82,3 +82,17 @@ class TestDashboardUrlTemplate:
         cfg = resolve_provider("usepod")
         url = cfg.dashboard_url_template.format(domain="usepod.ai", token="abc123")
         assert url == "https://usepod.ai/dashboard?token=abc123"
+
+
+class TestUsePodX402Provider:
+    def test_resolves_and_is_accountless(self) -> None:
+        cfg = resolve_provider("usepod-x402")
+        assert cfg.key == "usepod-x402"
+        assert cfg.accountless is True
+        assert cfg.has_credits is False
+        # The proxy path uses the literal "x402" segment in place of a token.
+        assert cfg.proxy_token == "x402"
+
+    def test_token_providers_are_not_accountless(self) -> None:
+        assert resolve_provider("level5").accountless is False
+        assert resolve_provider("usepod").accountless is False

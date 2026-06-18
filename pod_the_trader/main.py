@@ -184,7 +184,9 @@ async def async_main(
     logger.info("Using %s domain: %s", provider.display_name, base_domain)
 
     if creds is None or not creds.api_token:
-        if creds and creds.is_new:
+        if provider.accountless:
+            pass  # No token/registration — the wallet pays per request.
+        elif creds and creds.is_new:
             pass  # Will register below
         else:
             env_var = f"{provider.key.upper()}_API_TOKEN"
@@ -301,6 +303,15 @@ async def async_main(
                 storage_dir=storage_dir,
             )
 
+            # Accountless x402: the wallet's on-chain USDC is the
+            # inference budget. Wire a reader so the client's balance
+            # gate (and the TUI) reflect the live wallet rather than a
+            # non-existent server-side ledger.
+            if provider.accountless:
+                level5_client.set_balance_reader(
+                    lambda: portfolio.get_token_balance(wallet_address, USDC_MINT)
+                )
+
             # 11. Persistent data: trade ledger + price log + wallet log +
             #     lot ledger. The lot ledger is the authoritative model for
             #     "what do I own and at what cost basis" — the trade ledger
@@ -352,6 +363,7 @@ async def async_main(
                 wallet_log=wallet_log,
                 portfolio=portfolio,
                 wallet_address=wallet_address,
+                keypair=keypair,
             )
             await agent.bootstrap_context()
             await agent.print_startup_banner()
@@ -600,7 +612,7 @@ def _parse_cli_args(
             base_domain = arg.split("=", 1)[1]
         elif arg == "--provider":
             if i + 1 >= len(argv):
-                raise SystemExit("--provider requires a value (level5 or usepod)")
+                raise SystemExit("--provider requires a value (level5, usepod, or usepod-x402)")
             provider = argv[i + 1]
             i += 1
         elif arg.startswith("--provider="):

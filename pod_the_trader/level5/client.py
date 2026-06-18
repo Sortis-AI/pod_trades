@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -71,16 +72,26 @@ class Level5Client:
         deposit_address: str | None = None,
         base_domain: str = "level5.cloud",
         provider: ProviderConfig | None = None,
+        balance_reader: Callable[[], Awaitable[float]] | None = None,
     ) -> None:
+        # Default to Level5 when no provider is passed so legacy call
+        # sites keep working. The provider only affects dashboard URL
+        # shape and the accountless flag — the wire protocol is identical.
+        self._provider = provider or resolve_provider(None)
+        # Accountless (x402) providers carry no token; the proxy path uses
+        # a fixed segment ("x402") so get_api_base_url() builds the right
+        # URL and is_registered() reports usable without registration.
+        if api_token is None and self._provider.accountless:
+            api_token = self._provider.proxy_token
         self._api_token = api_token
         self._deposit_address = deposit_address
         self._base_domain = base_domain.strip().strip("/")
         self._base_url = f"https://api.{self._base_domain}"
         self._dashboard_base = f"https://{self._base_domain}"
-        # Default to Level5 when no provider is passed so legacy call
-        # sites keep working. The provider only affects dashboard URL
-        # shape — the wire protocol is identical across providers.
-        self._provider = provider or resolve_provider(None)
+        # For accountless providers there's no server-side balance ledger;
+        # the wallet's on-chain USDC is the inference budget. main.py
+        # injects a reader so get_balance() reflects the live wallet.
+        self._balance_reader = balance_reader
         self._http: httpx.AsyncClient | None = None
         self._last_balance_usdc: float | None = None
         # Split between deposited USDC and promotional credits — both in
@@ -215,6 +226,17 @@ class Level5Client:
         transient error lands between the deposit and the first
         successful post-deposit poll.
         """
+        # Accountless (x402): no server balance ledger. The inference
+        # budget is the wallet's on-chain USDC, read via the injected
+        # reader. Always "active" — there's no funding/activation gate.
+        if self._provider.accountless:
+            balance = await self._balance_reader() if self._balance_reader else 0.0
+            self._last_usdc_only = balance
+            self._last_credit_only = 0.0
+            self._last_is_active = True
+            self._last_balance_usdc = balance
+            return balance
+
         data = await self._request("GET", f"/proxy/{self._api_token}/balance")
 
         # usdc_balance and credit_balance are in microunits (6 decimals)
@@ -262,10 +284,23 @@ class Level5Client:
         returns the canonical URL in its response and we store that
         verbatim on the credentials record.
         """
+        # Accountless providers have no per-account dashboard — spend is
+        # visible on-chain. Return empty so the TUI hides the link.
+        if self._provider.accountless:
+            return ""
         return self._provider.dashboard_url_template.format(
             domain=self._base_domain,
             token=self._api_token,
         )
+
+    def set_balance_reader(self, reader: Callable[[], Awaitable[float]]) -> None:
+        """Wire the on-chain USDC reader for accountless providers.
+
+        Called after the Portfolio is constructed (it doesn't exist yet
+        when the client is built), so ``get_balance`` can report the
+        wallet's live USDC as the x402 inference budget.
+        """
+        self._balance_reader = reader
 
     @property
     def provider(self) -> ProviderConfig:

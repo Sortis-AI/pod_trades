@@ -8,7 +8,9 @@ import re
 import time
 from datetime import UTC, datetime
 
+import httpx
 from openai import AsyncOpenAI
+from solders.keypair import Keypair
 
 from pod_the_trader.agent.memory import ConversationMemory
 from pod_the_trader.config import Config
@@ -18,6 +20,7 @@ from pod_the_trader.data.price_log import PriceLog, PriceTick, now_iso
 from pod_the_trader.data.reconciler import reconcile_portfolio
 from pod_the_trader.data.wallet_log import WalletLog, WalletSnapshot
 from pod_the_trader.level5.client import Level5Client
+from pod_the_trader.level5.x402 import X402Payer, X402Transport
 from pod_the_trader.tools.registry import ToolRegistry
 from pod_the_trader.trading.dex import SOL_MINT, USDC_MINT, JupiterDex
 from pod_the_trader.trading.portfolio import Portfolio
@@ -359,9 +362,11 @@ class TradingAgent:
         portfolio: Portfolio | None = None,
         wallet_address: str = "",
         publisher: Publisher | None = None,
+        keypair: Keypair | None = None,
     ) -> None:
         self._config = config
         self._level5 = level5_client
+        self._keypair = keypair
         self._registry = tool_registry
         self._memory = memory
         self._ledger = ledger
@@ -381,9 +386,42 @@ class TradingAgent:
         self._cycle_count = 0
         self._last_trade_time: float | None = None
 
-        # Level5 is the only provider
+        # A provider must be usable: registered (token-based providers) or
+        # accountless (x402, where the wallet is the identity).
+        provider = level5_client.provider
         if not level5_client.is_registered():
-            raise ValueError("Level5 registration required — it is the only LLM provider")
+            raise ValueError(f"{provider.display_name} is not usable: no registration/credentials")
+        if provider.accountless and self._keypair is None:
+            raise ValueError(
+                f"{provider.display_name} pays for inference from the local wallet, "
+                "but no keypair was provided to the agent."
+            )
+
+        # For the accountless x402 provider, inference is paid per request
+        # from the trading wallet. We slot a custom httpx transport under
+        # the OpenAI SDK that answers the 402 challenge inline (pay → retry)
+        # with config-editable spend caps. Token-based providers (Level5 /
+        # UsePod) use the SDK's default transport unchanged.
+        http_client = None
+        if provider.accountless:
+            payer = X402Payer(
+                self._keypair,
+                rpc_url=config.get("solana.rpc_url", "https://api.mainnet-beta.solana.com"),
+                per_request_cap_usdc=float(
+                    config.get(f"{provider.key}.per_request_cap_usdc", 0.50) or 0.0
+                ),
+                max_daily_spend_usdc=float(
+                    config.get(f"{provider.key}.max_daily_x402_spend_usdc", 10.0) or 0.0
+                ),
+            )
+            http_client = httpx.AsyncClient(transport=X402Transport(payer))
+            logger.info(
+                "x402 inference enabled: paying from wallet %s "
+                "(per-request cap $%.2f, daily cap $%.2f)",
+                str(self._keypair.pubkey()),
+                float(config.get(f"{provider.key}.per_request_cap_usdc", 0.50) or 0.0),
+                float(config.get(f"{provider.key}.max_daily_x402_spend_usdc", 10.0) or 0.0),
+            )
 
         # 5 retries with a 2/4/8/16/32-second exponential backoff
         # schedule (62-second total budget) — matches the Level5 and
@@ -395,6 +433,7 @@ class TradingAgent:
             base_url=level5_client.get_api_base_url(),
             api_key="level5",
             max_retries=5,
+            http_client=http_client,
         )
 
     def _compose_trade_context(self, current_price: float) -> str:

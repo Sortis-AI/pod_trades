@@ -408,3 +408,43 @@ class TestSanitizeUrl:
     def test_no_token_passes_through(self) -> None:
         url = "https://api.level5.cloud/v1/register"
         assert _sanitize_url(url) == url
+
+
+class TestAccountlessX402Client:
+    """The accountless x402 provider has no token, no /v1/register, and no
+    server balance ledger — the wallet is the identity and its on-chain
+    USDC is the inference budget."""
+
+    def _client(self, balance_reader=None):
+        from pod_the_trader.level5.provider import resolve_provider
+
+        return Level5Client(
+            base_domain="usepod.ai",
+            provider=resolve_provider("usepod-x402"),
+            balance_reader=balance_reader,
+        )
+
+    def test_is_registered_without_token(self) -> None:
+        # No token supplied, yet the accountless client is usable.
+        assert self._client().is_registered() is True
+
+    def test_base_url_uses_literal_x402_segment(self) -> None:
+        url = self._client().get_api_base_url()
+        assert url == "https://api.usepod.ai/proxy/x402/v1"
+
+    def test_dashboard_url_is_empty(self) -> None:
+        # No per-account dashboard for accountless.
+        assert self._client().get_dashboard_url() == ""
+
+    async def test_get_balance_uses_wallet_reader(self) -> None:
+        async def reader() -> float:
+            return 42.5
+
+        client = self._client(balance_reader=reader)
+        assert await client.get_balance() == 42.5
+        # No server call was made; the value comes from the wallet reader.
+        assert client.last_usdc_balance == 42.5
+
+    async def test_get_balance_without_reader_is_zero(self) -> None:
+        # Defensive: before the reader is wired, balance reads 0 (not a crash).
+        assert await self._client().get_balance() == 0.0

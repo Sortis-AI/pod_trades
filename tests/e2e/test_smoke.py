@@ -3,6 +3,7 @@
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from pod_the_trader.level5.provider import resolve_provider
 from pod_the_trader.trading.dex import JupiterDex
 from pod_the_trader.trading.portfolio import Portfolio
 from pod_the_trader.trading.transaction import TransactionBuilder
@@ -61,6 +62,7 @@ class TestSmoke:
 
         mock_level5 = MagicMock(spec=Level5Client)
         mock_level5.is_registered.return_value = True
+        mock_level5.provider = resolve_provider("level5")
         mock_level5.get_api_base_url.return_value = "https://proxy"
         mock_level5._api_token = "test_token"
 

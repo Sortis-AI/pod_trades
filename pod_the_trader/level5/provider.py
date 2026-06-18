@@ -26,6 +26,7 @@ class Provider(StrEnum):
 
     LEVEL5 = "level5"
     USEPOD = "usepod"
+    USEPOD_X402 = "usepod-x402"
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,14 @@ class ProviderConfig:
     ``{domain}`` and ``{token}`` placeholders; it's used by
     ``Level5Client.get_dashboard_url`` for tokens entered manually,
     where there's no register response to read the URL from.
+
+    ``accountless`` marks providers that have no registration/token and
+    no server-side balance ledger — the local Solana wallet IS the
+    account, and inference is paid per-request over the x402 protocol
+    (UsePod's accountless endpoint). For these, the client skips
+    ``/v1/register``, reports balance from the on-chain wallet, and the
+    proxy path uses the literal segment ``x402`` instead of a token.
+    ``proxy_token`` is that fixed path segment.
     """
 
     key: str
@@ -44,6 +53,8 @@ class ProviderConfig:
     default_domain: str
     dashboard_url_template: str
     has_credits: bool
+    accountless: bool = False
+    proxy_token: str = ""
 
 
 PROVIDERS: dict[str, ProviderConfig] = {
@@ -62,6 +73,21 @@ PROVIDERS: dict[str, ProviderConfig] = {
         # (services/api/src/handler/public.rs).
         dashboard_url_template="https://{domain}/dashboard?token={token}",
         has_credits=False,
+    ),
+    Provider.USEPOD_X402.value: ProviderConfig(
+        key=Provider.USEPOD_X402.value,
+        display_name="UsePod (x402, accountless)",
+        default_domain="usepod.ai",
+        # Accountless: no token to put in a dashboard URL. There is no
+        # per-account dashboard; spend is visible on-chain. The template
+        # is unused (get_dashboard_url returns "" for accountless) but
+        # kept non-empty so str.format never sees a missing field.
+        dashboard_url_template="https://{domain}/",
+        has_credits=False,
+        accountless=True,
+        # The proxy path segment is the literal "x402" in place of an
+        # account token: POST https://api.usepod.ai/proxy/x402/v1/...
+        proxy_token="x402",
     ),
 }
 

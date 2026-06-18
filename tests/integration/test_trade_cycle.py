@@ -7,6 +7,7 @@ from pod_the_trader.agent.core import TradingAgent
 from pod_the_trader.agent.memory import ConversationMemory
 from pod_the_trader.config import Config
 from pod_the_trader.level5.client import Level5Client
+from pod_the_trader.level5.provider import resolve_provider
 from pod_the_trader.tools import create_registry
 from pod_the_trader.trading.dex import JupiterDex, SwapQuote
 from pod_the_trader.trading.portfolio import Portfolio
@@ -58,6 +59,7 @@ class TestTradeCycle:
         mock_tx = MagicMock(spec=TransactionBuilder)
         mock_level5 = MagicMock(spec=Level5Client)
         mock_level5.is_registered.return_value = True
+        mock_level5.provider = resolve_provider("level5")
         mock_level5.get_api_base_url.return_value = "https://proxy"
         mock_level5._api_token = "test_token"
         mock_level5.get_balance = AsyncMock(return_value=10.0)

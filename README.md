@@ -10,7 +10,7 @@ An autonomous Solana trading agent. An LLM makes live buy/sell decisions on a si
 - **Executes real swaps** through Jupiter DEX aggregator. SOL, USDC, and one configured target token are the only mints it can touch — a tool-layer guard rejects anything else.
 - **Tracks cost basis** in a lot-based ledger. Every position change (bot trade, external deposit, external withdrawal, gas) is a cost-basis event; realized and unrealized P&L come from FIFO lot matching instead of volume math. A reconciler runs before every cycle and at startup to absorb any on-chain drift the bot didn't cause.
 - **Shows it all live** in a 3×3 Textual grid: Portfolio, Health (P&L gauge), Trade ledger, Market Charts (SOL/target price plus RSI / IPP / rolling-volatility sparklines for the target token), Level5 Billing (inference cost), Cycle status, and a scrollable log tail.
-- **Bills its own inference** through your choice of [Level5](https://level5.cloud) or [UsePod](https://usepod.ai) — two API-compatible Solana-native pay-as-you-go LLM proxies. You fund the account once with USDC and the bot draws from it per request. Pick a provider with `--provider {level5,usepod}` at startup (or via the `provider` config key); the bot remembers your choice in the saved credentials file.
+- **Bills its own inference** through your choice of [Level5](https://level5.cloud) or [UsePod](https://usepod.ai) — Solana-native pay-as-you-go LLM proxies. Run account-based (fund a USDC balance once, draw per request) or fully accountless via UsePod's [x402](https://www.x402.org) endpoint (no account/token — the bot pays each call straight from the local wallet, bounded by config spend caps). Pick with `--provider {level5,usepod,usepod-x402}` at startup (or the `provider` config key); the bot remembers your choice in the saved credentials file.
 
 ## Quick install
 
@@ -52,19 +52,28 @@ To upgrade later, run `pod-the-trader update` — it pulls the latest code and r
 
 ## Choosing a provider
 
-Both providers expose a byte-identical API surface (UsePod is a Rust port of Level5), so the only operator-facing differences are:
+There are three providers. **Level5** and **UsePod** are account-based: register once, fund the account with USDC, and the bot draws from that server-side balance per request. **UsePod x402** is *accountless*: there's no registration, no API token, and no dashboard — the bot pays for each inference call directly from your local Solana wallet over the [x402 protocol](https://www.x402.org).
+
+Level5 and UsePod expose a byte-identical API surface (UsePod is a Rust port of Level5), so the only operator-facing differences are:
 
 - **Default model name.** Level5 has its own catalog (e.g. `minimax-m2.7`); UsePod proxies OpenAI/Anthropic-shaped names (e.g. `claude-sonnet-4-6`, `gpt-5.3-codex`). Update `agent.model` in your config when you switch.
 - **Credits.** Level5 supports promotional credits separate from USDC; UsePod is USDC-only. The dashboard hides the Credits row automatically when UsePod is active.
 - **Dashboard URL.** Level5 uses `https://level5.cloud/dashboard/<token>`; UsePod uses `https://usepod.ai/dashboard?token=<token>`.
 
+**UsePod x402 (accountless, `usepod-x402`).** No account or token — the wallet is the identity. Each request hits `https://api.usepod.ai/proxy/x402/v1`, receives an HTTP `402` payment challenge, and the bot pays the quoted USDC on-chain from the trading wallet, then retries. Because real funds move automatically on every call, two **config-editable safety caps** bound the spend (see the `usepod-x402` config section):
+
+- `per_request_cap_usdc` (default `0.50`) — reject any single 402 quote above this; the cycle aborts rather than overpay a malformed/hostile quote.
+- `max_daily_x402_spend_usdc` (default `10.0`) — once cumulative x402 spend in a UTC day reaches this, inference pauses until the next day.
+
+Inference spend competes with trading capital in the same wallet (`min_balance_threshold_usdc` gates it). There's no dashboard — spend is visible on-chain. **First-use note:** the on-chain settlement follows the canonical x402 exact-SVM scheme; validate with a single live call before relying on it for sustained spend (the per-request cap bounds the risk).
+
 You can pick a provider three ways, listed in increasing precedence:
 
-1. **Config file** — set `provider: "usepod"` at the top of your YAML.
-2. **CLI flag** — `pod-the-trader --provider usepod` (overrides config).
-3. **Env-skipped onboarding** — set `LEVEL5_API_TOKEN` *or* `USEPOD_API_TOKEN`. The wizard reads only the active provider's variable; cross-pairs are ignored.
+1. **Config file** — set `provider: "usepod-x402"` at the top of your YAML.
+2. **CLI flag** — `pod-the-trader --provider usepod-x402` (overrides config). Valid values: `level5`, `usepod`, `usepod-x402`.
+3. **Env-skipped onboarding** — set `LEVEL5_API_TOKEN` *or* `USEPOD_API_TOKEN`. The wizard reads only the active provider's variable; cross-pairs are ignored. (x402 needs no token — only a funded wallet.)
 
-The first time you launch, the wizard asks you to pick a provider then offers register / paste-token / skip. The choice is saved in `~/.pod_the_trader/level5_credentials.json` (filename kept for backward compatibility) along with the provider key, so subsequent launches don't re-prompt.
+The first time you launch, the wizard asks you to pick a provider. Account-based providers then offer register / paste-token / skip; the accountless x402 option just confirms the wallet will pay. The choice is saved in `~/.pod_the_trader/level5_credentials.json` (filename kept for backward compatibility) along with the provider key, so subsequent launches don't re-prompt.
 
 ## Configuration
 
@@ -86,11 +95,15 @@ The knobs you'll care about most:
 | `trading.cooldown_seconds` | `300` | Seconds to wait between cycles. |
 | `trading.max_price_impact_pct` | `1.5` | Refuse swaps with worse Jupiter-reported price impact. |
 | `trading.fallback_slice_usdc` | `25.0` | Slice size used when Jupiter doesn't report `liquidity_usd` on the latest tick. Prevents the `min($150, 0.015 * liquidity_usd)` sizing rule from collapsing to `$0` and silently blocking trades. |
-| `provider` | `level5` | Active LLM-proxy provider. One of `level5` or `usepod`. Override at startup with `--provider`. |
+| `provider` | `level5` | Active LLM-proxy provider. One of `level5`, `usepod`, or `usepod-x402` (accountless, wallet-paid). Override at startup with `--provider`. |
 | `level5.min_balance_threshold_usdc` | `0.1` | Pause trading when Level5 balance drops below this floor. |
 | `level5.base_domain` | `level5.cloud` | Host for the Level5 API (`api.<domain>`) and dashboard (`<domain>/dashboard/<token>`). Override on the command line with `--base-domain`. |
 | `usepod.min_balance_threshold_usdc` | `0.1` | Pause trading when UsePod balance drops below this floor. |
 | `usepod.base_domain` | `usepod.ai` | Host for the UsePod API and dashboard (UsePod uses `<domain>/dashboard?token=<token>`). |
+| `usepod-x402.x402_asset` | `USDC` | Asset used to settle accountless x402 inference charges. |
+| `usepod-x402.per_request_cap_usdc` | `0.50` | Reject (and abort the cycle on) any single x402 quote above this — bounds a bad/hostile quote. |
+| `usepod-x402.max_daily_x402_spend_usdc` | `10.0` | Pause x402 inference once cumulative USDC spend in a UTC day reaches this. |
+| `usepod-x402.min_balance_threshold_usdc` | `1.0` | Pause trading/inference when the wallet's USDC (the x402 budget) drops below this floor. |
 | `agent.model` | `minimax-m2.7` | The LLM the active provider proxies to. UsePod expects OpenAI/Anthropic-shaped names like `claude-sonnet-4-6` or `gpt-5.3-codex`; Level5 has its own model catalog. Change this when you switch providers. |
 | `agent.max_iterations_per_turn` | `10` | Max tool-call iterations per cycle. |
 

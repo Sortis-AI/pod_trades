@@ -29,6 +29,28 @@ usepod:
   base_domain: "usepod.ai"
   min_balance_threshold_usdc: 0.1
 
+# UsePod's accountless x402 inference: no registration, no API token,
+# no dashboard. The local Solana wallet IS the account — each inference
+# request is paid per-call over the x402 protocol (HTTP 402 challenge →
+# on-chain USDC payment → retry with PAYMENT-SIGNATURE). Select with
+# `provider: "usepod-x402"` or `--provider usepod-x402`.
+usepod-x402:
+  base_domain: "usepod.ai"
+  # Asset used to settle x402 charges: "USDC" or "SOL".
+  x402_asset: "USDC"
+  # SAFETY CAPS (edit to taste). The trading wallet auto-pays these
+  # charges, so these ceilings bound the blast radius of a bad/hostile
+  # 402 quote and total daily inference spend.
+  #  - per_request_cap_usdc: reject (and abort the cycle) if a single
+  #    402 quote exceeds this. Stops a malformed quote draining funds.
+  #  - max_daily_x402_spend_usdc: once cumulative x402 spend in a UTC
+  #    day reaches this, inference pauses until the next UTC day.
+  per_request_cap_usdc: 0.50
+  max_daily_x402_spend_usdc: 10.0
+  # Minimum wallet USDC before the bot will start/continue paying for
+  # inference (mirrors the other providers' balance gate).
+  min_balance_threshold_usdc: 1.0
+
 trading:
   target_token_address: "EN2nnxrg8uUi6x2sJkzNPd2eT6rB9rdSoQNNaENA4RZA"
   max_position_size_usdc: 100.0
