@@ -35,8 +35,23 @@ class HealthWidget(Static):
         if summary is None or summary.get("trade_count", 0) == 0:
             return title + "\n[dim]no trades[/]"
 
-        pnl = summary.get("realized_pnl_usd", 0.0)
-        pnl_pct = summary.get("realized_pnl_pct", 0.0)
+        # The dollar figure is TOTAL P&L (realized + unrealized) so it
+        # reconciles with the open position reflected in the portfolio
+        # total. Fall back to realized-only if a summary without the
+        # total field is supplied (e.g. the legacy TradeLedger summary).
+        pnl = summary.get("total_pnl_usd")
+        if pnl is None:
+            pnl = summary.get("realized_pnl_usd", 0.0)
+
+        # The percentage is that same total P&L against the current
+        # portfolio value, so the two numbers describe one thing. Only
+        # when the portfolio total isn't available yet do we fall back
+        # to the summary's own pct (avoids a divide-by-zero showing 0%).
+        portfolio_total = summary.get("portfolio_total_usd", 0.0) or 0.0
+        if portfolio_total > 0:
+            pnl_pct = pnl / portfolio_total * 100.0
+        else:
+            pnl_pct = summary.get("realized_pnl_pct", 0.0)
         win_rate = summary.get("win_rate_pct", 0.0)
         trades = summary.get("trade_count", 0)
 

@@ -87,6 +87,10 @@ class PodDashboardApp(App):
         # Cache the latest token price seen via on_portfolio_snapshot so
         # health/cycle handlers can reprice the lot ledger without an RPC.
         self._latest_token_price: float = 0.0
+        # Cache the latest total portfolio USD value so the Health panel
+        # can express total P&L as a percentage of the live book (the %
+        # and $ then describe the same thing instead of two bases).
+        self._latest_portfolio_total: float = 0.0
 
     # ------------------------------------------------------------------ layout
 
@@ -162,13 +166,14 @@ class PodDashboardApp(App):
             health = self.query_one("#health", HealthWidget)
         except Exception:
             return
-        if summary is not None:
-            health.summary = summary
-            return
-        if self._lot_ledger is not None and self._target_mint:
-            health.summary = self._lot_ledger.summary(self._target_mint, self._latest_token_price)
-            return
-        health.summary = self._ledger.summary()
+        if summary is None:
+            if self._lot_ledger is not None and self._target_mint:
+                summary = self._lot_ledger.summary(self._target_mint, self._latest_token_price)
+            else:
+                summary = self._ledger.summary()
+        # Supply the live portfolio total so the widget can express
+        # total P&L as a percentage of the current book.
+        health.summary = {**summary, "portfolio_total_usd": self._latest_portfolio_total}
 
     def on_startup(
         self,
@@ -227,8 +232,10 @@ class PodDashboardApp(App):
             self.query_one("#portfolio", PortfolioWidget).snapshot = snap
             with contextlib.suppress(Exception):
                 self._latest_token_price = float(snap.get("token_price_usd", 0.0) or 0.0)
+                self._latest_portfolio_total = float(snap.get("total_usd", 0.0) or 0.0)
 
         # Refresh health from the lot ledger (or whatever the agent passed).
+        # Runs after the snapshot above so the % uses the latest book value.
         self._refresh_health(summary.get("ledger_summary"))
 
         # Refresh sparklines from the price log.
@@ -260,6 +267,9 @@ class PodDashboardApp(App):
         self.query_one("#portfolio", PortfolioWidget).snapshot = snapshot
         with contextlib.suppress(Exception):
             self._latest_token_price = float(snapshot.get("token_price_usd", 0.0) or 0.0)
+            self._latest_portfolio_total = float(snapshot.get("total_usd", 0.0) or 0.0)
+        # Keep the Health % in sync with the freshly-updated book value.
+        self._refresh_health()
 
     def on_level5_balance(self, usdc: float, credit: float) -> None:
         widget = self.query_one("#level5", Level5Widget)
