@@ -31,7 +31,7 @@ read this and make sure you understand what you're agreeing to.
      layer. Losses are real and on-chain transactions are irreversible.
 
   2. LLM-DRIVEN DECISIONS. Trading decisions are made by a large language
-     model (minimax-m2.7 via Level5). The model can hallucinate, misread
+     model (minimax-m3 via the configured LLM proxy). The model can hallucinate, misread
      market data, make arithmetic errors, pick bad sizes, or act on stale
      context. It has already done all of these during development. Do not
      assume it will make profitable trades.

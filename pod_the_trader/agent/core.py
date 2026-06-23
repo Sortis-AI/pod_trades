@@ -624,7 +624,7 @@ class TradingAgent:
         """
         self._memory.add_message("user", user_input)
 
-        model = self._config.get("agent.model", "minimax-m2.7")
+        model = self._config.get("agent.model", "minimax-m3")
         max_tokens = self._config.get("agent.max_tokens", 2048)
         max_iterations = self._config.get("agent.max_iterations_per_turn", 10)
         system_prompt = self._build_system_prompt()

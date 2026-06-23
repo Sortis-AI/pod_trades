@@ -32,7 +32,7 @@ class TestConfigLoading:
         assert config.get("agent.name") == "Custom Bot"
         assert config.get("trading.max_slippage_bps") == 100
         # Unmerged defaults still present
-        assert config.get("agent.model") == "minimax-m2.7"
+        assert config.get("agent.model") == "minimax-m3"
 
     def test_env_var_overrides(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TARGET_TOKEN_ADDRESS", TEST_TOKEN)

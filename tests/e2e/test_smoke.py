@@ -15,7 +15,7 @@ class TestSmoke:
 
     def test_config_with_valid_address(self, sample_config) -> None:
         assert sample_config.get("agent.name") == "Pod The Trader"
-        assert sample_config.get("agent.model") == "minimax-m2.7"
+        assert sample_config.get("agent.model") == "minimax-m3"
         assert sample_config.get("trading.target_token_address") is not None
 
     def test_all_tools_registered(self, sample_config) -> None:

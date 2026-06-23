@@ -106,7 +106,7 @@ The knobs you'll care about most:
 | `usepod-x402.per_request_cap_usdc` | `0.50` | Reject (and abort the cycle on) any single x402 quote above this — bounds a bad/hostile quote. |
 | `usepod-x402.max_daily_x402_spend_usdc` | `10.0` | Pause x402 inference once cumulative USDC spend in a UTC day reaches this. |
 | `usepod-x402.min_balance_threshold_usdc` | `1.0` | Pause trading/inference when the wallet's USDC (the x402 budget) drops below this floor. |
-| `agent.model` | `minimax-m2.7` | The LLM the active provider proxies to. UsePod expects OpenAI/Anthropic-shaped names like `claude-sonnet-4-6` or `gpt-5.3-codex`; Level5 has its own model catalog. Change this when you switch providers. |
+| `agent.model` | `minimax-m3` | The LLM the active provider proxies to. UsePod expects OpenAI/Anthropic-shaped names like `claude-sonnet-4-6` or `gpt-5.3-codex`; Level5 has its own model catalog. Change this when you switch providers. |
 | `agent.max_iterations_per_turn` | `10` | Max tool-call iterations per cycle. |
 
 ## Usage
@@ -312,7 +312,7 @@ This is the full disclaimer shown at every launch. You must type `I ACCEPT` befo
 >
 > 1. **REAL FUNDS.** Every trade moves actual SOL, USDC, and SPL tokens from your wallet. There is no testnet mode, no dry run, no simulation layer. Losses are real and on-chain transactions are irreversible.
 >
-> 2. **LLM-DRIVEN DECISIONS.** Trading decisions are made by a large language model (minimax-m2.7 via Level5). The model can hallucinate, misread market data, make arithmetic errors, pick bad sizes, or act on stale context. It has already done all of these during development. Do not assume it will make profitable trades.
+> 2. **LLM-DRIVEN DECISIONS.** Trading decisions are made by a large language model (minimax-m3 via the configured LLM proxy). The model can hallucinate, misread market data, make arithmetic errors, pick bad sizes, or act on stale context. It has already done all of these during development. Do not assume it will make profitable trades.
 >
 > 3. **NO WARRANTY.** This software is experimental and provided as-is, with no guarantee of correctness, profitability, uptime, or data integrity. Recent history includes pricing bugs, unintended trade routes, dust trades, and decision-execution mismatches. More bugs almost certainly remain.
 >

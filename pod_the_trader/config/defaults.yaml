@@ -1,6 +1,6 @@
 agent:
   name: "Pod The Trader"
-  model: "minimax-m2.7"
+  model: "minimax-m3"
   max_iterations_per_turn: 10
   max_tokens: 2048
 
