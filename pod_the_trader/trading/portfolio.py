@@ -14,6 +14,12 @@ from pod_the_trader.trading.dex import JupiterDex
 logger = logging.getLogger(__name__)
 
 LAMPORTS_PER_SOL = 1_000_000_000
+# Per-call RPC read timeout. solana-py's AsyncClient defaults to 10s; the
+# rate-limited getTokenAccountsByOwner fallback would otherwise stall the
+# full 10s on each public endpoint, stacking to a ~40s balance read that
+# hung startup. 6s is ample for the healthy direct-ATA path (sub-second)
+# while capping the slow fallback.
+_RPC_READ_TIMEOUT = 6.0
 TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
 TOKEN_2022_PROGRAM_ID = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
 ASSOCIATED_TOKEN_PROGRAM_ID = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
@@ -154,7 +160,7 @@ class Portfolio:
         for attempt in range(max_passes):
             for url in self._rpc_urls:
                 try:
-                    async with AsyncClient(url) as client:
+                    async with AsyncClient(url, timeout=_RPC_READ_TIMEOUT) as client:
                         resp = await client.get_balance(pubkey)
                     return resp.value / LAMPORTS_PER_SOL
                 except Exception as e:
@@ -268,8 +274,60 @@ class Portfolio:
         path1_errors: list[str] = []
         path2_errors: list[str] = []
 
-        async with AsyncClient(url) as client:
-            # ---- Path 1: getTokenAccountsByOwner under both programs ----
+        async with AsyncClient(url, timeout=_RPC_READ_TIMEOUT) as client:
+            # ---- Path A: direct ATA read (PRIMARY) ----
+            # getTokenAccountBalance on the derived associated-token account
+            # is the reliable, low-cost path: it works on public RPCs and
+            # returns in well under a second. It is tried FIRST because the
+            # bulk getTokenAccountsByOwner call below is rate-limited/blocked
+            # on most public endpoints and stalls to the client timeout (~10s
+            # each), which previously made a single balance read take 40s and
+            # hung startup for minutes. A non-existent ATA raises "could not
+            # find account", handled as a silent zero.
+            for program_id in (TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID):
+                ata, _ = Pubkey.find_program_address(
+                    [bytes(owner), bytes(program_id), bytes(mint)],
+                    ASSOCIATED_TOKEN_PROGRAM_ID,
+                )
+                try:
+                    bal = await client.get_token_account_balance(ata)
+                    if bal.value is not None and bal.value.ui_amount is not None:
+                        seen[str(ata)] = float(bal.value.ui_amount)
+                except Exception as e:
+                    if _is_account_not_found(e):
+                        continue
+                    # Unrecognized error. Some providers wrap "not found" as
+                    # a message-less SolanaRpcException that defeats phrase
+                    # filters. Disambiguate with a getAccountInfo probe —
+                    # value is None proves the ATA was never created (silent
+                    # zero). This runs ONLY on the error path, so the healthy
+                    # read stays a single fast getTokenAccountBalance call;
+                    # getAccountInfo is rate-limited on some public RPCs.
+                    try:
+                        info_resp = await client.get_account_info(ata)
+                        if info_resp.value is None:
+                            continue
+                    except Exception:
+                        pass
+                    path2_errors.append(
+                        f"getTokenAccountBalance(ATA, {str(program_id)[:12]}): "
+                        f"{type(e).__name__}: {e!r}"
+                    )
+
+            if seen:
+                return sum(seen.values()), path1_errors, path2_errors
+
+            # If the ATA read completed cleanly with no balance and no errors,
+            # the wallet simply holds none in a standard ATA — authoritative
+            # zero. The bot only ever creates standard ATAs, so we skip the
+            # slow bulk scan entirely in this (common) case.
+            if not path2_errors:
+                return 0.0, path1_errors, path2_errors
+
+            # ---- Path B: getTokenAccountsByOwner (FALLBACK) ----
+            # Only reached when the ATA read itself errored (so we can't be
+            # sure of a zero). Catches the rare case of holdings in a
+            # non-standard token account. Bounded by the client timeout above.
             for program_id in (TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID):
                 try:
                     resp = await client.get_token_accounts_by_owner_json_parsed(
@@ -293,38 +351,14 @@ class Portfolio:
                         f"{type(e).__name__}: {e!r}"
                     )
 
-            if seen:
-                return sum(seen.values()), path1_errors, path2_errors
-
-            # ---- Path 2: ATA fallback for both programs ----
-            for program_id in (TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID):
-                try:
-                    ata, _ = Pubkey.find_program_address(
-                        [bytes(owner), bytes(program_id), bytes(mint)],
-                        ASSOCIATED_TOKEN_PROGRAM_ID,
-                    )
-                    info_resp = await client.get_account_info(ata)
-                    if info_resp.value is None:
-                        continue  # ATA has never been created — silent zero
-                    bal = await client.get_token_account_balance(ata)
-                    if bal.value is not None and bal.value.ui_amount is not None:
-                        seen[str(ata)] = float(bal.value.ui_amount)
-                except Exception as e:
-                    if _is_account_not_found(e):
-                        continue
-                    path2_errors.append(
-                        f"getTokenAccountBalance(ATA, {str(program_id)[:12]}): "
-                        f"{type(e).__name__}: {e!r}"
-                    )
-
         if seen:
             return sum(seen.values()), path1_errors, path2_errors
 
-        if path2_errors:
-            # Path 2 errored — caller should try next endpoint.
+        if path1_errors or path2_errors:
+            # Both paths errored on this endpoint — caller should try next.
             return None, path1_errors, path2_errors
 
-        # Path 2 cleanly reported "not found" — authoritative zero.
+        # Clean "not found" everywhere — authoritative zero.
         return 0.0, path1_errors, path2_errors
 
     async def get_portfolio_value(

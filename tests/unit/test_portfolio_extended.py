@@ -55,14 +55,18 @@ class TestGetPortfolioValue:
         mock_sol_resp = MagicMock()
         mock_sol_resp.value = 2_000_000_000  # 2 SOL
 
-        token_accts_resp = MagicMock()
-        token_accts_resp.value = [_make_mock_token_account("AcctABC", 100.0)]
+        # Primary path is the direct ATA balance read: legacy ATA holds 100,
+        # the Token-2022 ATA doesn't exist.
+        legacy_bal = MagicMock()
+        legacy_bal.value.ui_amount = 100.0
+        not_found = Exception(
+            'RPCException(InvalidParamsMessage { message: "Invalid param: '
+            'could not find account" })'
+        )
 
         mock_client = AsyncMock()
         mock_client.get_balance = AsyncMock(return_value=mock_sol_resp)
-        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(
-            return_value=token_accts_resp
-        )
+        mock_client.get_token_account_balance = AsyncMock(side_effect=[legacy_bal, not_found])
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 

@@ -46,24 +46,17 @@ class TestGetSolanaBalance:
 
 class TestGetSplTokenBalance:
     async def test_returns_token_balance(self, registry: ToolRegistry) -> None:
-        # Build a fake token account row as returned by getTokenAccountsByOwner
-        acc = MagicMock()
-        acc.pubkey = "TokenAcct1"
-        acc.account.data.parsed = {
-            "info": {
-                "tokenAmount": {
-                    "amount": "500000000",
-                    "decimals": 6,
-                    "uiAmount": 500.0,
-                    "uiAmountString": "500.0",
-                }
-            }
-        }
-        resp = MagicMock()
-        resp.value = [acc]
+        # Primary path is the direct ATA balance read: legacy ATA holds 500,
+        # the Token-2022 ATA doesn't exist.
+        legacy_bal = MagicMock()
+        legacy_bal.value.ui_amount = 500.0
+        not_found = Exception(
+            'RPCException(InvalidParamsMessage { message: "Invalid param: '
+            'could not find account" })'
+        )
 
         mock_client = AsyncMock()
-        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(return_value=resp)
+        mock_client.get_token_account_balance = AsyncMock(side_effect=[legacy_bal, not_found])
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 

@@ -99,12 +99,18 @@ class TestIsAccountNotFound:
 
 class TestGetTokenBalance:
     async def test_returns_balance(self, portfolio: Portfolio) -> None:
-        acc = _make_mock_token_account("TokenAcctABC", 1000.5)
-        resp = MagicMock()
-        resp.value = [acc]
-
+        # The PRIMARY path is the direct ATA read (getTokenAccountBalance):
+        # it's fast and works on public RPCs, unlike the bulk
+        # getTokenAccountsByOwner scan (now a fallback). A standard SPL token
+        # lives in the legacy-program ATA; the Token-2022 ATA doesn't exist.
+        legacy_bal = MagicMock()
+        legacy_bal.value.ui_amount = 1000.5
+        not_found = Exception(
+            'RPCException(InvalidParamsMessage { message: "Invalid param: '
+            'could not find account" })'
+        )
         mock_client = AsyncMock()
-        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(return_value=resp)
+        mock_client.get_token_account_balance = AsyncMock(side_effect=[legacy_bal, not_found])
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
@@ -113,9 +119,9 @@ class TestGetTokenBalance:
                 "11111111111111111111111111111111", TEST_MINT
             )
 
-        # RPC returns the same account under both program filters; dedupe
-        # keeps only one, so the result should be 1000.5 not 2001.0
         assert balance == 1000.5
+        # The fast ATA path answered — the slow bulk scan is never invoked.
+        mock_client.get_token_accounts_by_owner_json_parsed.assert_not_called()
 
     async def test_returns_zero_when_no_account(self, portfolio: Portfolio) -> None:
         empty_resp = MagicMock()
@@ -200,28 +206,21 @@ class TestGetTokenBalance:
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert not warnings, f"Expected no WARNINGs, got: {[r.message for r in warnings]}"
 
-    async def test_path1_vendor_error_with_clean_path2_is_silent(
+    async def test_ata_clean_not_found_skips_slow_fallback(
         self, portfolio: Portfolio, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Production regression: some RPC providers raise a vendor-
-        specific error on ``getTokenAccountsByOwner`` for wallets that
-        have never held the token (not a recognizable "account not
-        found" string). Path 2 (direct ATA lookup) then cleanly reports
-        not-found. The bot must treat this as the normal zero state and
-        NOT emit a WARNING — Path 2 is authoritative.
+        """When the primary ATA read cleanly reports "could not find
+        account" (the normal zero state for a token the wallet has never
+        held), the result is an authoritative silent zero. The slow
+        getTokenAccountsByOwner fallback must NOT be invoked, and no
+        WARNING is emitted.
         """
+        not_found = Exception(
+            'RPCException(InvalidParamsMessage { message: "Invalid param: '
+            'could not find account" })'
+        )
         mock_client = AsyncMock()
-        # Path 1: some unrecognized vendor error — not a classic "not found".
-        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(
-            side_effect=Exception("Invalid account data for mint under this program")
-        )
-        # Path 2: clean not-found.
-        mock_client.get_token_account_balance = AsyncMock(
-            side_effect=Exception(
-                'RPCException(InvalidParamsMessage { message: "Invalid param: '
-                'could not find account" })'
-            )
-        )
+        mock_client.get_token_account_balance = AsyncMock(side_effect=not_found)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
@@ -236,9 +235,8 @@ class TestGetTokenBalance:
         assert balance == 0.0
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert not warnings, f"Expected no WARNINGs, got: {[r.message for r in warnings]}"
-        # Path 1 chatter should still reach DEBUG for diagnosis.
-        debug_messages = [r.message for r in caplog.records if r.levelname == "DEBUG"]
-        assert any("Path 1" in m for m in debug_messages)
+        # The bulk scan (slow on public RPCs) is never reached.
+        mock_client.get_token_accounts_by_owner_json_parsed.assert_not_called()
 
     async def test_bare_solana_rpc_exception_on_missing_ata_is_silent(
         self, portfolio: Portfolio, caplog: pytest.LogCaptureFixture
@@ -264,21 +262,16 @@ class TestGetTokenBalance:
             def __str__(self) -> str:
                 return ""
 
-        # get_account_info returns value=None → short-circuit, never
-        # calls get_token_account_balance at all.
+        # Primary ATA read raises the message-less bare exception (not a
+        # recognizable "not found" string). The error-path getAccountInfo
+        # probe then returns value=None, proving the ATA was never created →
+        # silent zero, without the slow bulk scan.
         info_resp = MagicMock()
         info_resp.value = None
 
-        empty_resp = MagicMock()
-        empty_resp.value = []
-
         mock_client = AsyncMock()
-        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(return_value=empty_resp)
-        mock_client.get_account_info = AsyncMock(return_value=info_resp)
-        # If Path 2 ever reaches this, the bare SolanaRpcException
-        # would break phrase-based filters — the get_account_info
-        # lookahead must prevent us from getting here.
         mock_client.get_token_account_balance = AsyncMock(side_effect=SolanaRpcException())
+        mock_client.get_account_info = AsyncMock(return_value=info_resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
@@ -293,8 +286,10 @@ class TestGetTokenBalance:
         assert balance == 0.0
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert not warnings, f"Expected no WARNINGs, got: {[r.message for r in warnings]}"
-        # And we should indeed have skipped the balance call.
-        mock_client.get_token_account_balance.assert_not_called()
+        # The getAccountInfo probe disambiguated the bare exception as a
+        # missing ATA, so the slow bulk scan was never reached.
+        mock_client.get_account_info.assert_called()
+        mock_client.get_token_accounts_by_owner_json_parsed.assert_not_called()
 
     async def test_real_rpc_failure_still_warns(
         self, portfolio: Portfolio, caplog: pytest.LogCaptureFixture
@@ -331,13 +326,22 @@ class TestGetTokenBalance:
         assert "endpoint" in warnings[0].message
         assert "connection reset by peer" in warnings[0].message
 
-    async def test_dedup_across_programs(self, portfolio: Portfolio) -> None:
-        """Same account pubkey returned under both program queries — dedupe."""
+    async def test_dedup_across_programs_in_fallback(self, portfolio: Portfolio) -> None:
+        """The getTokenAccountsByOwner fallback dedupes the same account
+        pubkey returned under both program filters. Reached only when the
+        primary ATA read errors (here: a real RPC error on both the balance
+        call and the disambiguating probe), forcing the fallback.
+        """
         acc = _make_mock_token_account("SameAccount", 500.0)
         resp = MagicMock()
         resp.value = [acc]
+        rpc_busy = Exception("RPC node busy")
 
         mock_client = AsyncMock()
+        # Primary ATA path errors (non-"not found"), and the probe also
+        # errors → not a clean zero → fall through to the bulk scan.
+        mock_client.get_token_account_balance = AsyncMock(side_effect=rpc_busy)
+        mock_client.get_account_info = AsyncMock(side_effect=rpc_busy)
         mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(return_value=resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
@@ -347,21 +351,22 @@ class TestGetTokenBalance:
                 "11111111111111111111111111111111", TEST_MINT
             )
 
-        # Returned once under each program filter, same pubkey, dedup = 500
+        # Same pubkey under each program filter, deduped → 500
         assert balance == 500.0
 
-    async def test_token_2022_program(self, portfolio: Portfolio) -> None:
-        """Token found only under Token-2022 program (different pubkey)."""
-        legacy_empty = MagicMock()
-        legacy_empty.value = []
-        token2022_resp = MagicMock()
-        token2022_resp.value = [_make_mock_token_account("T22Acct", 777.0)]
+    async def test_token_2022_via_ata(self, portfolio: Portfolio) -> None:
+        """Token held under the Token-2022 program: the primary ATA path
+        finds it on the Token-2022 ATA (legacy ATA not found)."""
+        not_found = Exception(
+            'RPCException(InvalidParamsMessage { message: "Invalid param: '
+            'could not find account" })'
+        )
+        t22_bal = MagicMock()
+        t22_bal.value.ui_amount = 777.0
 
         mock_client = AsyncMock()
-        # First call: legacy program (empty), second: Token-2022 (has account)
-        mock_client.get_token_accounts_by_owner_json_parsed = AsyncMock(
-            side_effect=[legacy_empty, token2022_resp]
-        )
+        # ATA loop order is (legacy, Token-2022): legacy missing, T-2022 has it.
+        mock_client.get_token_account_balance = AsyncMock(side_effect=[not_found, t22_bal])
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
@@ -371,6 +376,7 @@ class TestGetTokenBalance:
             )
 
         assert balance == 777.0
+        mock_client.get_token_accounts_by_owner_json_parsed.assert_not_called()
 
 
 class TestRecordAndHistory:
