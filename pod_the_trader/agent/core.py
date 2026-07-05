@@ -979,6 +979,15 @@ class TradingAgent:
             except Exception as e:
                 logger.error("Trading cycle error: %s", e, exc_info=True)
 
+            # Deterministic gas-reserve top-up. Runs at the end of EVERY
+            # cycle, independent of the model's decision (and even if the
+            # cycle above errored), so the wallet never strands itself
+            # unable to pay for swaps. No inference involved.
+            try:
+                await self._maybe_topup_sol()
+            except Exception as e:
+                logger.error("SOL top-up check failed: %s", e, exc_info=True)
+
             # Wait for cooldown or shutdown
             await self._wait_or_shutdown(shutdown_event, cooldown)
 
@@ -1064,6 +1073,141 @@ class TradingAgent:
         """Wait for the specified duration or until shutdown is signaled."""
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(shutdown_event.wait(), timeout=seconds)
+
+    async def _maybe_topup_sol(self) -> None:
+        """Deterministically top up the SOL gas reserve when it runs low.
+
+        Runs at the end of every cycle with NO inference: if the on-chain
+        SOL balance is below ``trading.sol_topup_threshold_sol``, buy enough
+        SOL to reach ``trading.sol_topup_target_sol``, funding the purchase
+        from USDC first and falling back to the target token. Keeping gas
+        management out of the LLM loop means a wallet can't strand itself
+        unable to pay for the next swap because the model didn't think to
+        refill.
+
+        No-op (with a debug/warning log) when disabled, already above the
+        threshold, or when no funding source can cover the top-up.
+        """
+        if self._portfolio is None or self._dex is None:
+            return
+        threshold = float(self._config.get("trading.sol_topup_threshold_sol", 0.01) or 0.0)
+        if threshold <= 0:
+            return  # feature disabled
+
+        try:
+            sol_balance = await self._portfolio.get_sol_balance(self._wallet_address)
+        except Exception as e:
+            logger.debug("SOL top-up: balance read failed: %s", e)
+            return
+        if sol_balance >= threshold:
+            return
+
+        target_sol = float(self._config.get("trading.sol_topup_target_sol", 0.03) or 0.0)
+        min_trade = float(self._config.get("trading.min_trade_size_usdc", 1.0) or 0.0)
+        slippage = int(self._config.get("trading.max_slippage_bps", 50) or 50)
+        target_mint = self._config.get("trading.target_token_address", "")
+
+        try:
+            sol_price = await self._dex.get_token_price(SOL_MINT)
+        except Exception as e:
+            logger.warning("SOL top-up: could not fetch SOL price: %s", e)
+            return
+        if sol_price <= 0:
+            return
+
+        # USD of SOL to buy to reach the target, with a small buffer for
+        # slippage/fees so we don't land just under and re-trigger next
+        # cycle, and never below the tool's minimum trade size.
+        need_sol = max(target_sol - sol_balance, 0.0)
+        need_usd = max(need_sol * sol_price * 1.03, min_trade + 0.01)
+
+        logger.info(
+            "SOL %.6f below top-up threshold %.4f; buying ~$%.2f of SOL for gas",
+            sol_balance,
+            threshold,
+            need_usd,
+        )
+
+        # 1) Fund from USDC.
+        try:
+            usdc_balance = await self._portfolio.get_token_balance(self._wallet_address, USDC_MINT)
+        except Exception:
+            usdc_balance = 0.0
+        if usdc_balance >= need_usd and await self._execute_topup_swap(
+            USDC_MINT, SOL_MINT, need_usd, slippage
+        ):
+            return
+
+        # 2) Fall back to selling the target token for SOL.
+        if target_mint and target_mint not in (SOL_MINT, USDC_MINT):
+            try:
+                token_balance = await self._portfolio.get_token_balance(
+                    self._wallet_address, target_mint
+                )
+                token_price = await self._dex.get_token_price(target_mint)
+            except Exception as e:
+                logger.warning("SOL top-up: target token read failed: %s", e)
+                token_balance = token_price = 0.0
+            if token_price > 0:
+                token_amount = need_usd / token_price
+                if (
+                    token_balance * token_price >= need_usd
+                    and token_amount > 0
+                    and await self._execute_topup_swap(
+                        target_mint, SOL_MINT, token_amount, slippage
+                    )
+                ):
+                    return
+
+        logger.warning(
+            "SOL top-up needed (%.6f < %.4f) but neither USDC ($%.4f) nor the target "
+            "token could cover ~$%.2f — wallet may stall on gas.",
+            sol_balance,
+            threshold,
+            usdc_balance,
+            need_usd,
+        )
+
+    async def _execute_topup_swap(
+        self,
+        input_mint: str,
+        output_mint: str,
+        amount_in: float,
+        slippage_bps: int,
+    ) -> bool:
+        """Run a gas top-up swap through the tool registry (so it lands in
+        the ledger like any other swap) WITHOUT inference. Returns True on a
+        confirmed fill.
+        """
+        execute = getattr(self._registry, "execute", None)
+        if not callable(execute):
+            return False
+        try:
+            raw = await execute(
+                "execute_swap",
+                {
+                    "input_mint": input_mint,
+                    "output_mint": output_mint,
+                    "amount_in": amount_in,
+                    "slippage_bps": slippage_bps,
+                },
+            )
+        except Exception as e:
+            logger.warning("SOL top-up swap raised: %s", e)
+            return False
+        if _result_indicates_success(raw):
+            self._last_trade_time = time.time()
+            logger.info(
+                "SOL top-up swap confirmed: %s -> SOL",
+                input_mint[:8],
+            )
+            return True
+        try:
+            err = json.loads(raw).get("error")
+        except Exception:
+            err = raw
+        logger.warning("SOL top-up swap did not confirm: %s", err)
+        return False
 
     async def fetch_target_metadata(self) -> None:
         """Look up the target token's symbol/name from the Jupiter token list.

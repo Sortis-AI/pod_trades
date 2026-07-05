@@ -438,6 +438,97 @@ class TestSwapResultAccounting:
         assert agent._trade_count == 0
 
 
+class TestSolTopup:
+    """The deterministic end-of-cycle SOL gas top-up: below the threshold,
+    buy SOL from USDC first, then the target token — no inference.
+    """
+
+    from pod_the_trader.trading.dex import SOL_MINT, USDC_MINT
+
+    def _wire(
+        self,
+        agent: TradingAgent,
+        *,
+        sol_balance: float,
+        usdc_balance: float = 0.0,
+        token_balance: float = 0.0,
+        sol_price: float = 150.0,
+        token_price: float = 0.0005,
+        target_mint: str = "EN2nnxrg8uUi6x2sJkzNPd2eT6rB9rdSoQNNaENA4RZA",
+    ) -> list[dict]:
+        """Attach mock portfolio/dex + a capturing execute_swap. Returns the
+        list that records each swap the top-up issues.
+        """
+        agent._config._set_dotted(agent._config._data, "trading.target_token_address", target_mint)
+        agent._wallet_address = "wallet"
+
+        async def _sol_bal(_w: str) -> float:
+            return sol_balance
+
+        async def _tok_bal(_w: str, mint: str) -> float:
+            return {self.USDC_MINT: usdc_balance, target_mint: token_balance}.get(mint, 0.0)
+
+        async def _price(mint: str) -> float:
+            return sol_price if mint == self.SOL_MINT else token_price
+
+        agent._portfolio = MagicMock()
+        agent._portfolio.get_sol_balance = AsyncMock(side_effect=_sol_bal)
+        agent._portfolio.get_token_balance = AsyncMock(side_effect=_tok_bal)
+        agent._dex = MagicMock()
+        agent._dex.get_token_price = AsyncMock(side_effect=_price)
+
+        swaps: list[dict] = []
+
+        async def _swap_handler(args: dict) -> dict:
+            swaps.append(args)
+            return {"success": True, "signature": "sig"}
+
+        agent._registry.register(
+            "execute_swap", "", {"type": "object", "properties": {}}, _swap_handler
+        )
+        return swaps
+
+    async def test_noop_when_sol_above_threshold(self, agent: TradingAgent) -> None:
+        swaps = self._wire(agent, sol_balance=0.05, usdc_balance=100.0)
+        await agent._maybe_topup_sol()
+        assert swaps == []
+
+    async def test_disabled_when_threshold_zero(self, agent: TradingAgent) -> None:
+        swaps = self._wire(agent, sol_balance=0.0, usdc_balance=100.0)
+        agent._config._set_dotted(agent._config._data, "trading.sol_topup_threshold_sol", 0)
+        await agent._maybe_topup_sol()
+        assert swaps == []
+
+    async def test_tops_up_from_usdc(self, agent: TradingAgent) -> None:
+        swaps = self._wire(agent, sol_balance=0.005, usdc_balance=100.0)
+        await agent._maybe_topup_sol()
+        assert len(swaps) == 1
+        assert swaps[0]["input_mint"] == self.USDC_MINT
+        assert swaps[0]["output_mint"] == self.SOL_MINT
+        # ~ (0.03 - 0.005) SOL * $150 * 1.03 buffer ≈ $3.86
+        assert 3.0 < swaps[0]["amount_in"] < 5.0
+
+    async def test_falls_back_to_token_when_usdc_short(self, agent: TradingAgent) -> None:
+        target = "EN2nnxrg8uUi6x2sJkzNPd2eT6rB9rdSoQNNaENA4RZA"
+        swaps = self._wire(
+            agent,
+            sol_balance=0.005,
+            usdc_balance=0.0,
+            token_balance=1_000_000.0,
+            token_price=0.0005,
+            target_mint=target,
+        )
+        await agent._maybe_topup_sol()
+        assert len(swaps) == 1
+        assert swaps[0]["input_mint"] == target
+        assert swaps[0]["output_mint"] == self.SOL_MINT
+
+    async def test_no_swap_when_no_funding_source(self, agent: TradingAgent) -> None:
+        swaps = self._wire(agent, sol_balance=0.005, usdc_balance=0.0, token_balance=0.0)
+        await agent._maybe_topup_sol()
+        assert swaps == []
+
+
 class TestTradeContextRefresh:
     """Trade context (the ``Cost-basis ledger ...`` line in the system
     prompt) must be recomputed at the top of each cycle. Without that,

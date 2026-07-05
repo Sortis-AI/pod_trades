@@ -983,6 +983,7 @@ async def async_main_tui(
                 portfolio=portfolio,
                 wallet_address=wallet_address,
                 publisher=app,
+                keypair=keypair,
             )
             await agent.bootstrap_context()
 

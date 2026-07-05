@@ -91,11 +91,13 @@ The knobs you'll care about most:
 |---|---|---|
 | `trading.target_token_address` | `EN2nn…SQUIRE` | The token the bot is trying to trade profitably. Can also be set via `TARGET_TOKEN_ADDRESS` env var. |
 | `trading.max_position_size_usdc` | `100` | Hard cap on position size, in USDC. |
-| `trading.max_slippage_bps` | `150` | Max Jupiter slippage tolerance, in basis points. |
+| `trading.max_slippage_bps` | `50` | Max Jupiter slippage tolerance, in basis points. |
 | `trading.min_trade_size_usdc` | `1.0` | Swaps below this USD value are rejected at the tool layer. Network fees would exceed the trade value. |
 | `trading.max_daily_trades` | `20` | Per-day safety cap. |
 | `trading.cooldown_seconds` | `300` | Seconds to wait between cycles. |
 | `trading.max_price_impact_pct` | `1.5` | Refuse swaps with worse Jupiter-reported price impact. |
+| `trading.sol_topup_threshold_sol` | `0.01` | If on-chain SOL falls below this, the bot auto-buys SOL for gas at the end of the cycle (no inference). Set to `0` to disable. |
+| `trading.sol_topup_target_sol` | `0.03` | Target SOL balance the auto top-up buys up to (funded from USDC first, then the target token). |
 | `trading.fallback_slice_usdc` | `25.0` | Slice size used when Jupiter doesn't report `liquidity_usd` on the latest tick. Prevents the `min($150, 0.015 * liquidity_usd)` sizing rule from collapsing to `$0` and silently blocking trades. |
 | `provider` | `level5` | Active LLM-proxy provider. One of `level5`, `usepod`, or `usepod-x402` (accountless, wallet-paid). Override at startup with `--provider`. |
 | `level5.min_balance_threshold_usdc` | `0.1` | Pause trading when Level5 balance drops below this floor. |

@@ -67,6 +67,14 @@ trading:
   max_daily_trades: 20
   cooldown_seconds: 300
   max_price_impact_pct: 1.5
+  # Gas-reserve auto top-up. Checked deterministically (NO inference) at
+  # the end of every cycle: if on-chain SOL falls below
+  # sol_topup_threshold_sol, the bot buys enough SOL to reach
+  # sol_topup_target_sol, funding from USDC first and the target token
+  # second. Keeps the wallet able to pay Jupiter gas regardless of what
+  # the model decides. Set the threshold to 0 to disable.
+  sol_topup_threshold_sol: 0.01
+  sol_topup_target_sol: 0.03
   # Maximum allowable drift between the first successful swap's
   # output/input ratio in a cycle and any subsequent swap's quoted
   # ratio in the same direction. When the model fires multiple slices
