@@ -1,6 +1,6 @@
 [project]
 name = "pod-the-trader"
-version = "0.3.21"
+version = "0.3.22"
 description = "Autonomous Solana trading agent powered by MiniMax"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]

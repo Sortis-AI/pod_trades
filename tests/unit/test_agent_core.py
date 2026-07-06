@@ -528,6 +528,18 @@ class TestSolTopup:
         await agent._maybe_topup_sol()
         assert swaps == []
 
+    async def test_rent_locked_wallet_skips_doomed_swaps(
+        self, agent: TradingAgent, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # At/near the rent-exempt floor the wallet can't pay for any tx, so
+        # it can't buy its own gas. The top-up must NOT fire doomed swaps —
+        # it should surface an operator instruction to deposit SOL instead.
+        swaps = self._wire(agent, sol_balance=0.000893, usdc_balance=1338.0)
+        with caplog.at_level("WARNING", logger="pod_the_trader.agent.core"):
+            await agent._maybe_topup_sol()
+        assert swaps == []
+        assert any("rent-exempt floor" in r.message for r in caplog.records)
+
 
 class TestTradeContextRefresh:
     """Trade context (the ``Cost-basis ledger ...`` line in the system

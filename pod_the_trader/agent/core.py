@@ -28,6 +28,14 @@ from pod_the_trader.tui.publisher import NullPublisher, Publisher
 
 logger = logging.getLogger(__name__)
 
+# Below this SOL balance the wallet can't self-fund even one transaction,
+# so it physically cannot buy its own gas. A bare system account must stay
+# rent-exempt (~0.00089 SOL / 890,880 lamports); a SOL-output swap also
+# needs ~0.002 SOL of transient wrapped-SOL account rent plus the fee. When
+# SOL is under this floor the gas top-up is impossible (you'd need SOL to
+# swap for SOL) and only an external SOL deposit can unstick the wallet.
+_SOL_MIN_SELF_FUND = 0.0035
+
 
 def _pod_trader_backoff_seconds(attempt_index: int) -> float:
     """Exponential backoff schedule: 2, 4, 8, 16, 32 seconds.
@@ -122,11 +130,11 @@ SYSTEM_PROMPT_BASE = (
     "A. PRICE BAND (Inference Payback Period — IPP)\n"
     "-----------------------------------------------\n"
     "IPP is the number of days for $1/day of inference yield to repay\n"
-    "the market price of 500,000 target tokens. 500,000 tokens earn\n"
-    "$1/day in Level5 inference credits; if the market price of 500,000\n"
-    "tokens is $500, the payback period is 500 days.\n\n"
+    "the market price of 250,000 target tokens. 250,000 tokens earn\n"
+    "$1/day in Level5 inference credits; if the market price of 250,000\n"
+    "tokens is $250, the payback period is 250 days.\n\n"
     "Each cycle, compute:\n"
-    "    IPP = 500_000 * current_price_usd       (units: days)\n\n"
+    "    IPP = 250_000 * current_price_usd       (units: days)\n\n"
     "Bands:\n"
     "  - IPP < 1800        → BUY band. Execute one Section-D slice per\n"
     "    cycle while the reversal proxy (Section B.3) passes. No time\n"
@@ -1100,6 +1108,22 @@ class TradingAgent:
             logger.debug("SOL top-up: balance read failed: %s", e)
             return
         if sol_balance >= threshold:
+            return
+
+        # Rent-lock guard: if SOL is at/near the rent-exempt floor the wallet
+        # can't pay for ANY transaction, so it can't buy its own gas. Trying
+        # would just fire doomed preflight-rejecting swaps every cycle. Skip
+        # them and surface an actionable operator instruction instead — only
+        # an external SOL deposit can recover from here.
+        if sol_balance < _SOL_MIN_SELF_FUND:
+            logger.warning(
+                "SOL %.6f is at/near the rent-exempt floor: the wallet cannot pay "
+                "for any transaction and so cannot buy its own gas (needs SOL to "
+                "swap for SOL). Deposit ~0.02 SOL to %s to unstick it — USDC/token "
+                "funds are stranded until then.",
+                sol_balance,
+                self._wallet_address,
+            )
             return
 
         target_sol = float(self._config.get("trading.sol_topup_target_sol", 0.03) or 0.0)

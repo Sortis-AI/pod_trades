@@ -147,10 +147,11 @@ class MarketChartsWidget(Static):
             )
         if kind == "ipp":
             # IPP is Inference Payback Period — days for $1/day of yield to
-            # repay the market price of 500,000 target tokens. The unit
-            # suffix makes the time-horizon meaning visible at a glance.
+            # repay the market price of 250,000 target tokens (SQUIRE's
+            # breakeven basket halved from 500,000 as its per-token yield
+            # doubled). The unit suffix makes the time horizon visible.
             ticks = self._price_log.read_for_mint(mint)
-            values = [500_000 * t.price_usd for t in ticks if t.price_usd > 0]
+            values = [250_000 * t.price_usd for t in ticks if t.price_usd > 0]
             return (
                 values,
                 lambda v: f"{v:,.0f} days",
