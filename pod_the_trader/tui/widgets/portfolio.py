@@ -90,8 +90,10 @@ class PortfolioWidget(Static):
             lines.append("")
             # Click the wallet to copy to clipboard. Textual fires
             # action_copy_wallet on this widget when the markup is clicked.
+            # Underline + hint make the click affordance discoverable.
             lines.append(
-                f"[dim]wallet:[/] [@click=copy_wallet][#00d4ff]{self.wallet_address}[/][/]"
+                f"[dim]wallet:[/] [@click=copy_wallet][u #00d4ff]{self.wallet_address}[/]"
+                f" [dim](click to copy)[/][/]"
             )
         return "\n".join(lines)
 
